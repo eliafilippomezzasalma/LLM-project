@@ -1,7 +1,8 @@
 """Client minimo per il server locale di LM Studio.
 
 Chiede domande da terminale, le invia al modello locale
-e stampa le risposte. Si termina scrivendo "esci".
+e stampa le risposte in streaming. La cronologia resta in memoria
+per la sessione. Si termina scrivendo "esci".
 """
 
 import json
@@ -19,6 +20,11 @@ if not base_url.endswith("/v1"):
 model = os.environ["LM_MODEL"]
 sys.stdout.reconfigure(encoding="utf-8")  # accenti corretti anche con console non UTF-8
 
+# --- Cronologia della sessione (in memoria, persa alla chiusura) ----------
+messages = [
+    {"role": "system", "content": "Sei un assistente utile. Rispondi sempre in italiano, in modo chiaro e conciso."},
+]
+
 # --- Ciclo domande (si esce con "esci") -----------------------------------
 while True:
     domanda = input("Domanda (esci per terminare): ").strip()
@@ -27,10 +33,9 @@ while True:
     if not domanda:
         continue
 
-    messages = [
-        {"role": "system", "content": "Sei un assistente utile. Rispondi sempre in italiano, in modo chiaro e conciso."},
-        {"role": "user", "content": domanda},
-    ]
+    messages.append({"role": "user", "content": domanda})
+    risposta = []
+    completata = False
     payload = {
         "model": model,
         "messages": messages,
@@ -52,11 +57,19 @@ while True:
             if dati == "[DONE]":
                 break
             delta = json.loads(dati)["choices"][0]["delta"]
-            print(delta.get("content") or "", end="", flush=True)
+            testo = delta.get("content") or ""
+            risposta.append(testo)
+            print(testo, end="", flush=True)
         print()
+        completata = True
     except requests.exceptions.Timeout:
         print("Attesa scaduta: controllare server, carico e tempi.")
     except requests.exceptions.ConnectionError:
         print("Connessione fallita: controllare server, URL e porta.")
     except requests.exceptions.HTTPError:
         print("Errore HTTP:", response.status_code, response.text)
+
+    if completata:
+        messages.append({"role": "assistant", "content": "".join(risposta)})
+    else:
+        messages.pop()  # domanda senza risposta: non entra nella cronologia
