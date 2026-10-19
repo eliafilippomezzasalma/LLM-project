@@ -1,12 +1,12 @@
 # repo-lab-llm
 
-Client Python minimo che invia una domanda a un modello eseguito in locale con LM Studio e stampa la risposta. Materiale della Lezione 3 del corso Deep Learning e LLM (ITS Alto Adriatico).
+Client Python minimo che dialoga da terminale con un modello eseguito in locale con LM Studio: più domande nella stessa esecuzione, risposta in streaming e cronologia mantenuta per la sessione. Materiale della Lezione 3 del corso Deep Learning e LLM (ITS Alto Adriatico).
 
 ## Contenuto della repository
 
 | File | Funzione |
 |---|---|
-| `client.py` | Client che chiede una domanda da terminale e stampa la risposta del modello |
+| `client.py` | Client che chiede domande da terminale e stampa in streaming le risposte del modello |
 | `requirements.txt` | Dipendenze con versioni fissate |
 | `.env.example` | Modello della configurazione locale, senza segreti |
 | `CLAUDE.md` | Istruzioni di sviluppo lette da Claude Code |
@@ -47,6 +47,8 @@ In VS Code selezionare l'interprete `.venv` con **Python: Select Interpreter**.
    notepad .env
    ```
 
+`LM_BASE_URL` può essere scritto con o senza `/v1` (per esempio `http://127.0.0.1:1234`): il client aggiunge `/v1` se manca.
+
 `.env` resta sul proprio computer ed è escluso da Git.
 
 ## Avvio
@@ -55,12 +57,24 @@ In VS Code selezionare l'interprete `.venv` con **Python: Select Interpreter**.
 .\.venv\Scripts\python.exe client.py
 ```
 
-Il programma chiede una domanda, la invia al modello e stampa la risposta:
+Il programma chiede una domanda, la invia al modello e stampa la risposta man mano che arriva. Poi chiede la domanda successiva; per terminare si scrive `esci` (anche in maiuscolo):
 
 ```text
-Domanda: Cos'è un LLM?
-Un LLM è un modello di linguaggio addestrato su grandi quantità di testo...
+Domanda (esci per terminare): Mi chiamo Elia.
+Piacere di conoscerti, Elia. Come posso esserti utile oggi?
+Domanda (esci per terminare): Come mi chiamo?
+Ti sei presentato come Elia.
+Domanda (esci per terminare): esci
 ```
+
+## Funzionalità
+
+- **Input da terminale:** più domande nella stessa esecuzione, uscita con `esci`. Una riga vuota viene ignorata.
+- **Streaming:** la richiesta usa `"stream": true` e la risposta compare progressivamente. I byte del flusso sono decodificati in UTF-8 in modo esplicito, così gli accenti restano corretti.
+- **Cronologia in memoria:** la lista `messages` vive per tutta l'esecuzione, quindi il modello ricorda le domande precedenti (per esempio il nome). Alla chiusura la cronologia si perde: non viene salvata su disco. Una domanda che non riceve risposta (errore, timeout) non entra nella cronologia.
+- **Errori gestiti:** con server fermo, timeout o errore HTTP il programma stampa il messaggio e resta attivo, così si può riprovare senza riavviare.
+
+Limite noto: la cronologia non viene tagliata, quindi in sessioni molto lunghe si può superare il contesto del modello.
 
 ## Diagnosi rapida
 
@@ -71,5 +85,6 @@ Un LLM è un modello di linguaggio addestrato su grandi quantità di testo...
 | `Attesa scaduta` | Carico del computer, tempi del modello |
 | Risposta vuota | `"reasoning_effort": "none"` nel payload: senza, il modello ragiona e consuma i token prima di rispondere |
 | `KeyError: 'LM_BASE_URL'` o `'LM_MODEL'` | `.env` mancante o variabile non definita |
+| `ModuleNotFoundError: No module named 'requests'` | Dipendenze non installate nell'ambiente usato: rieseguire `pip install -r requirements.txt` con l'interprete dell'ambiente virtuale |
 
 Una risposta arrivata non è necessariamente corretta: va letta e valutata.
