@@ -4,7 +4,9 @@ Chiede domande da terminale, le invia al modello locale
 e stampa le risposte. Si termina scrivendo "esci".
 """
 
+import json
 import os
+import sys
 
 import requests
 from dotenv import load_dotenv
@@ -15,6 +17,7 @@ base_url = os.environ["LM_BASE_URL"].rstrip("/")
 if not base_url.endswith("/v1"):
     base_url += "/v1"  # il README usa http://localhost:1234/v1
 model = os.environ["LM_MODEL"]
+sys.stdout.reconfigure(encoding="utf-8")  # accenti corretti anche con console non UTF-8
 
 # --- Ciclo domande (si esce con "esci") -----------------------------------
 while True:
@@ -34,13 +37,23 @@ while True:
         "temperature": 0.2,
         "max_tokens": 1000,
         "reasoning_effort": "none",
-        "stream": False,
+        "stream": True,
     }
 
     try:
-        response = requests.post(f"{base_url}/chat/completions", json=payload, timeout=120)
+        response = requests.post(f"{base_url}/chat/completions", json=payload, timeout=120, stream=True)
         response.raise_for_status()
-        print(response.json()["choices"][0]["message"]["content"])
+        # Le righe arrivano come byte: decodifica esplicita in UTF-8,
+        # altrimenti requests può assumere ISO-8859-1 e rovinare gli accenti.
+        for riga in response.iter_lines():
+            if not riga.startswith(b"data: "):
+                continue
+            dati = riga[len(b"data: "):].decode("utf-8")
+            if dati == "[DONE]":
+                break
+            delta = json.loads(dati)["choices"][0]["delta"]
+            print(delta.get("content") or "", end="", flush=True)
+        print()
     except requests.exceptions.Timeout:
         print("Attesa scaduta: controllare server, carico e tempi.")
     except requests.exceptions.ConnectionError:
