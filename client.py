@@ -1,8 +1,7 @@
 """Client minimo per il server locale di LM Studio.
 
-Scheletro da completare con Claude Code (slide 19-22):
-configurazione, messaggi, payload e chiamata HTTP.
-Import e gestione degli errori sono gia' presenti: conservarli.
+Chiede una domanda da terminale, la invia al modello locale
+e stampa la risposta.
 """
 
 import os
@@ -11,21 +10,34 @@ import requests
 from dotenv import load_dotenv
 
 # --- Configurazione -------------------------------------------------------
-# DA COMPLETARE: caricare .env e leggere LM_BASE_URL e LM_MODEL,
-# senza scrivere URL o nome del modello nel codice.
+load_dotenv()
+base_url = os.environ["LM_BASE_URL"].rstrip("/")
+if not base_url.endswith("/v1"):
+    base_url += "/v1"  # il README usa http://localhost:1234/v1
+model = os.environ["LM_MODEL"]
 
 # --- Messaggi -------------------------------------------------------------
-# DA COMPLETARE: un'istruzione "system" in italiano e una domanda "user" fissa.
+domanda = input("Domanda: ")
+messages = [
+    {"role": "system", "content": "Sei un assistente utile. Rispondi sempre in italiano, in modo chiaro e conciso."},
+    {"role": "user", "content": domanda},
+]
 
 # --- Payload --------------------------------------------------------------
-# DA COMPLETARE: dizionario con model, messages, temperature, max_tokens,
-# reasoning_effort ("none", senza ragionamento) e stream.
+payload = {
+    "model": model,
+    "messages": messages,
+    "temperature": 0.2,
+    "max_tokens": 1000,
+    "reasoning_effort": "none",
+    "stream": False,
+}
 
 # --- Chiamata -------------------------------------------------------------
 try:
-    # DA COMPLETARE: inviare il payload a {base_url}/chat/completions,
-    # controllare lo stato HTTP e stampare choices[0].message.content.
-    print("client.py non ancora completato: vedere il piano concordato.")
+    response = requests.post(f"{base_url}/chat/completions", json=payload, timeout=120)
+    response.raise_for_status()
+    print(response.json()["choices"][0]["message"]["content"])
 except requests.exceptions.Timeout:
     print("Attesa scaduta: controllare server, carico e tempi.")
 except requests.exceptions.ConnectionError:

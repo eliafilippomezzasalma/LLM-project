@@ -6,7 +6,7 @@ Client Python minimo che invia una domanda a un modello eseguito in locale con L
 
 | File | Funzione |
 |---|---|
-| `client.py` | Scheletro del client da completare con Claude Code |
+| `client.py` | Client che chiede una domanda da terminale e stampa la risposta del modello |
 | `requirements.txt` | Dipendenze con versioni fissate |
 | `.env.example` | Modello della configurazione locale, senza segreti |
 | `CLAUDE.md` | Istruzioni di sviluppo lette da Claude Code |
@@ -53,6 +53,13 @@ In VS Code selezionare l'interprete `.venv` con **Python: Select Interpreter**.
 
 ```powershell
 .\.venv\Scripts\python.exe client.py
+```
+
+Il programma chiede una domanda, la invia al modello e stampa la risposta:
+
+```text
+Domanda: Cos'è un LLM?
+Un LLM è un modello di linguaggio addestrato su grandi quantità di testo...
 ```
 
 ## Diagnosi rapida
