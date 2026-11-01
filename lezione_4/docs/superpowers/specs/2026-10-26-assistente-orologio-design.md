@@ -70,6 +70,14 @@ riconoscibile e modificabile da solo.
   risposta. `google/gemma-4-e2b` era più veloce ma nel secondo caso non ha chiamato lo
   strumento. Entrambi restituiscono il ragionamento nel campo separato `reasoning_content`.
 - Il modello resta un valore di `.env`: cambiarlo non richiede modifiche al codice.
+- **Ragionamento disattivato** (deciso con l'utente il 2026-11-01, durante la prova reale):
+  con il ragionamento attivo LM Studio a volte mette la risposta finale di Qwen dopo lo
+  strumento in `reasoning_content`, che `langchain-openai` scarta, e la risposta arriva vuota
+  (2–4 casi su 5–6). Il client invia quindi `reasoning_effort: "none"` nel corpo della
+  richiesta (`extra_body`; il parametro `reasoning_effort` di `ChatOpenAI` diventerebbe
+  `reasoning: {effort}`, che LM Studio ignora). Prova del 2026-11-01: 6 risposte non vuote
+  su 6, strumento sempre chiamato con il fuso giusto, 12–16 s per domanda invece di 30–60 s.
+  Costo: risposte meno ragionate su domande complesse, fuori dal perimetro di questa lezione.
 
 ### 6.2 Sessione da terminale
 
@@ -108,7 +116,10 @@ Ciao!
   salvati. Così un orario vecchio non resta nel contesto e, a domande come «e adesso?», il
   modello deve richiamare lo strumento.
 - Il messaggio di sistema (in italiano) dice al modello di usare **sempre** lo strumento per
-  conoscere l'ora attuale e di non riutilizzare orari citati in precedenza.
+  conoscere l'ora attuale, di non riutilizzare orari citati in precedenza e di non calcolare
+  l'ora di un fuso partendo da un altro (aggiunto il 2026-11-01: nella prova reale, a «e a
+  Roma?» dopo Tokyo, Qwen chiamava lo strumento solo 2 volte su 6 e sbagliava l'ora in 3; con
+  la frase aggiunta 5 su 6. Il caso residuo è un limite del modello, non del programma).
 - Il ragionamento del modello non viene mai stampato né salvato in cronologia: quello nel
   campo separato viene ignorato (registrato a DEBUG); eventuali blocchi `<think>…</think>`
   dentro il contenuto vengono rimossi per sicurezza.
@@ -195,7 +206,8 @@ START → modello ──(ci sono tool_calls e passi < limite)──→ strumenti
 - **WARNING**: limite di passaggi raggiunto; errori di collegamento al modello.
 - **DEBUG**: ogni chiamata al modello con durata ed esito (richiesta strumento / risposta
   finale), messaggi inviati, ragionamento del modello.
-- Le librerie esterne (`httpx`, `openai`, `langchain*`, `langgraph`) sono portate a WARNING,
+- Le librerie esterne (`httpx`, `httpx2`, `httpcore`, `httpcore2`, `openai`, `langchain*`,
+  `langgraph`) sono portate a WARNING,
   così a INFO compaiono solo i log del progetto.
 
 ### 6.8 Errori
