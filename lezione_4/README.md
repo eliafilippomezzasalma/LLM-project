@@ -126,8 +126,11 @@ accorgersene: senza riga, l'ora non viene dallo strumento.
 | Sintomo | Causa probabile | Cosa fare |
 |---|---|---|
 | `Impossibile contattare il modello su http://...: Connection error.` | LM Studio spento, server non avviato o indirizzo sbagliato | avviare il server in LM Studio; controllare `LM_BASE_URL` (porta e `/v1`) |
-| `Configurazione non valida: Variabile d'ambiente mancante: LM_MODEL` | `.env` assente o incompleto | `Copy-Item .env.example .env` e compilarlo |
+| `Impossibile contattare il modello su http://localhost:1234: Unexpected endpoint or method. ...` | `LM_BASE_URL` senza `/v1` | aggiungere `/v1` all'indirizzo |
+| `Configurazione non valida: Variabile d'ambiente mancante: LM_MODEL` | `lezione_4/.env` assente o incompleto (viene letto solo quello della cartella del progetto) | `Copy-Item .env.example .env` e compilarlo |
+| `Configurazione non valida: LOG_LEVEL deve essere uno tra ...` | valore di `LOG_LEVEL` non riconosciuto | usare `DEBUG`, `INFO` o `WARNING` |
+| `Errore dal modello (HTTP 400): ...` | il server ha risposto con un errore, per esempio cronologia più lunga del contesto del modello dopo una sessione molto lunga | riavviare la chat (la cronologia riparte da zero) o aumentare il contesto del modello in LM Studio |
 | Risponde un modello diverso da quello atteso | `LM_MODEL` non corrisponde a un identificativo reale: LM Studio risponde comunque con il modello caricato, senza errore | confrontare `LM_MODEL` con `(Invoke-RestMethod http://localhost:1234/v1/models).data.id` |
 | Nel container: errore di connessione | il container non raggiunge l'host | avviare con `docker compose run --rm assistente` (usa `host.docker.internal` e `extra_hosts` di `compose.yaml`); verificare che LM Studio sia acceso sull'host |
-| Risposte lente (15–60 s) | modello locale da 9B su CPU/GPU dell'host; la prima domanda carica il modello | normale; con `LOG_LEVEL=DEBUG` si vede la durata di ogni chiamata |
+| Risposte lente (15–60 s) | modello locale da 9B su CPU/GPU dell'host; la prima domanda carica il modello | normale; con `LOG_LEVEL=DEBUG` si vedono i messaggi inviati e la durata di ogni chiamata |
 | `(nessuna risposta dal modello)` | il modello ha restituito un testo vuoto | riprovare; con `LOG_LEVEL=DEBUG` si vede l'esito di ogni chiamata (`chiamata -> risposta finale (7.6s)` o richiesta di strumento) |
