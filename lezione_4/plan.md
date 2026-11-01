@@ -102,8 +102,15 @@ Rimandate (minori):
 
 ## 7. Da fare
 
-- Provare `docker compose run --rm assistente` in un terminale interattivo vero: verificato
-  solo con input rediretto.
+Fatto il 2026-11-01:
+
+- ✅ `docker compose run --rm assistente` eseguito con il comando esatto del README (domande
+  passate in ingresso): strumento chiamato con `Asia/Tokyo`, risposta corretta, uscita con
+  `Ciao!`.
+- ✅ Push su GitHub (`origin/master`, repository `LLM-project`): la lezione è nella cartella
+  `lezione_4/`, accanto a `lezione_3/`, che non è stata modificata.
+
+Resta:
+
 - Provare `google/gemma-4-e2b` come modello alternativo.
 - Valutare le segnalazioni minori di §5.
-- Push su GitHub: solo su richiesta.
