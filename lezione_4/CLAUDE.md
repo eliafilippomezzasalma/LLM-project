@@ -1,8 +1,23 @@
 # Assistente del laboratorio
 
 Progetto del corso «Deep Learning e LLM: costruire chatbot e agenti».
-La cartella del progetto è `lezione_4/`; all'inizio contiene soltanto questo file.
-Struttura, dipendenze e comandi verranno definiti con la specifica e il piano.
+La cartella del progetto è `lezione_4/`. Specifica in `specs.md`, piano in
+`implementation_plan.md` (copie in `docs/superpowers/`); configurazione, avvio e diagnosi nel
+`README.md`.
+
+## Struttura
+- `assistente/`: `config` (variabili d'ambiente), `log` (stderr), `orologio` (strumento),
+  `strumenti` (esecuzione delle chiamate), `modello` (client LM Studio), `grafo` (LangGraph),
+  `sessione` (cronologia e prompt di sistema), `terminale` (chat, `python -m assistente`).
+- `tests/`: test automatici con modello finto (`finti.py`); `test_reale.py` per LM Studio.
+- `Dockerfile`, `.dockerignore`, `compose.yaml`: immagine solo runtime, LM Studio sull'host.
+- Dipendenze: `requirements.txt` (runtime, versioni fissate), `requirements-dev.txt` (+ pytest).
+
+## Comandi (PowerShell, da `lezione_4/`)
+- Test automatici: `.\venv\Scripts\python.exe -m pytest -q`
+- Prova reale: `$env:RUN_REAL_TESTS="1"; .\venv\Scripts\python.exe -m pytest -m reale -v -s`
+- Chat: `.\venv\Scripts\python.exe -m assistente`
+- Docker: `docker compose build`, poi `docker compose run --rm assistente`
 
 ## Obiettivo
 Un'applicazione da terminale in Python che conversa con un modello locale e:
