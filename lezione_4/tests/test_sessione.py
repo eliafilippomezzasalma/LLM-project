@@ -30,6 +30,12 @@ def test_prompt_sistema_impone_lo_strumento():
     assert "get_current_time" in PROMPT_SISTEMA
 
 
+def test_prompt_sistema_vieta_di_calcolare_tra_fusi():
+    # Prova reale: a «e a Roma?» dopo Tokyo, Qwen ricavava spesso l'ora sottraendo il fuso
+    # dalla risposta precedente invece di chiamare lo strumento, a volte sbagliando.
+    assert "non calcolare l'ora partendo da un altro fuso" in PROMPT_SISTEMA
+
+
 def test_cronologia_solo_domanda_e_risposta():
     sessione = _sessione(ModelloFinto([chiede_ora("Asia/Tokyo"), AIMessage("A Tokyo sono le 20:30.")]))
     assert sessione.chiedi("Che ore sono a Tokyo?") == "A Tokyo sono le 20:30."

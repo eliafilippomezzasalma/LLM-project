@@ -9,6 +9,8 @@ PROMPT_SISTEMA = (
     "Sei l'assistente del laboratorio. Rispondi in italiano, in modo breve e chiaro. "
     "Per conoscere la data o l'ora attuale usa sempre lo strumento get_current_time, "
     "anche se nella conversazione compare già un orario: quelli precedenti non sono più validi. "
+    "Per ogni città o fuso orario richiesto chiama lo strumento con quel fuso: "
+    "non calcolare l'ora partendo da un altro fuso o da un orario già citato. "
     "Riporta l'ora così come la restituisce lo strumento."
 )
 RISPOSTA_VUOTA = "(nessuna risposta dal modello)"
