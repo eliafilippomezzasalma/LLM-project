@@ -34,3 +34,13 @@ def test_info_nasconde_debug(capsys):
     configura_log("INFO")
     logging.getLogger("modello").debug("dettaglio")
     assert capsys.readouterr().err == ""
+
+
+def test_httpx2_e_httpcore_a_warning(capsys):
+    # openai 3.x usa i pacchetti httpx2 e httpcore2: il primo scrive a INFO a ogni richiesta,
+    # i trasporti a DEBUG a ogni connessione.
+    configura_log("DEBUG")
+    logging.getLogger("httpx2").info('HTTP Request: POST .../chat/completions "HTTP/1.1 200 OK"')
+    for nome in ("httpcore", "httpcore2.connection", "httpcore2.http11"):
+        logging.getLogger(nome).debug("connessione")
+    assert capsys.readouterr().err == ""

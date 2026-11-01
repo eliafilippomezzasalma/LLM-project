@@ -6,8 +6,8 @@ import sys
 FORMATO = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 FORMATO_ORA = "%H:%M:%S"
 
-# Librerie esterne che a INFO scriverebbero una riga per ogni richiesta HTTP.
-LIBRERIE_ESTERNE = ("httpx", "openai", "langchain", "langchain_core", "langchain_openai", "langgraph")
+# Librerie esterne che a INFO o DEBUG scriverebbero righe per ogni richiesta HTTP.
+LIBRERIE_ESTERNE = ("httpx", "httpx2", "httpcore", "httpcore2", "openai", "langchain", "langchain_core", "langchain_openai", "langgraph")
 
 
 def configura_log(livello: str) -> None:
