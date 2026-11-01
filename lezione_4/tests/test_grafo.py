@@ -82,3 +82,22 @@ def test_grafo_ha_nodi_espliciti():
     grafo = costruisci_grafo(ModelloFinto([AIMessage("x")]), REGISTRO, max_passi=3)
     nodi = set(grafo.get_graph().nodes) - {"__start__", "__end__"}
     assert nodi == {"modello", "strumenti"}
+
+
+def test_debug_registra_i_messaggi_inviati(caplog):
+    caplog.set_level(logging.DEBUG, logger="modello")
+    modello = ModelloFinto([AIMessage("Ciao Elia!")])
+    _domanda(costruisci_grafo(modello, REGISTRO, max_passi=3))
+    inviati = [r.getMessage() for r in caplog.records if r.getMessage().startswith("messaggi inviati")]
+    assert len(inviati) == 1 and "human" in inviati[0]
+
+
+def test_debug_registra_la_chiamata_fallita(caplog):
+    import pytest
+
+    from finti import ModelloCheFallisce
+
+    caplog.set_level(logging.DEBUG, logger="modello")
+    with pytest.raises(ConnectionError):
+        _domanda(costruisci_grafo(ModelloCheFallisce(ConnectionError("giù")), REGISTRO, max_passi=3))
+    assert any(r.getMessage().startswith("chiamata -> errore") for r in caplog.records)

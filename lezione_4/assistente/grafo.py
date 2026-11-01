@@ -46,8 +46,13 @@ def costruisci_grafo(modello: Runnable, registro: dict[str, BaseTool], max_passi
     """Costruisce e compila il grafo; modello e strumenti arrivano dall'esterno."""
 
     def nodo_modello(stato: StatoAssistente) -> dict:
+        log.debug("messaggi inviati: %s", [(m.type, m.text) for m in stato["messages"]])
         inizio = time.perf_counter()
-        risposta = modello.invoke(stato["messages"])
+        try:
+            risposta = modello.invoke(stato["messages"])
+        except Exception:
+            log.debug("chiamata -> errore (%.1fs)", time.perf_counter() - inizio)
+            raise
         esito = "richiesta strumento" if _chiede_strumenti(risposta) else "risposta finale"
         log.debug("chiamata -> %s (%.1fs)", esito, time.perf_counter() - inizio)
         ragionamento = risposta.additional_kwargs.get("reasoning_content")
