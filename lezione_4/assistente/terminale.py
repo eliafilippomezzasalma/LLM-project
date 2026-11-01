@@ -45,8 +45,14 @@ def esegui_chat(
             except LimitePassaggiRaggiunto:
                 log.warning("limite di passaggi raggiunto")
                 scrivi(AVVISO_LIMITE)
-            except openai.APIError as errore:
+            except openai.APIStatusError as errore:
+                # Il server ha risposto, ma con un errore (es. cronologia oltre il contesto).
+                log.warning("errore del modello: HTTP %s %s", errore.status_code, errore.message)
+                scrivi(f"Errore dal modello (HTTP {errore.status_code}): {errore.message}")
+            except Exception as errore:
+                # Connessione fallita o risposta non valida (es. LM_BASE_URL senza /v1).
                 log.warning("errore del modello: %s", errore)
+                log.debug("dettaglio dell'errore", exc_info=True)
                 scrivi(f"Impossibile contattare il modello su {indirizzo}: {errore}")
     except (EOFError, KeyboardInterrupt):
         scrivi("\nCiao!")

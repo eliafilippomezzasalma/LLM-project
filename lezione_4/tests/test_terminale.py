@@ -121,3 +121,20 @@ def test_main_scrive_in_utf8(monkeypatch):
     terminale.main()
     assert sys.stdout.encoding == "utf-8"
     assert sys.stderr.encoding == "utf-8"
+
+
+def test_errore_imprevisto_del_modello_non_chiude_la_chat():
+    # Es. LM_BASE_URL senza /v1: LM Studio risponde 200 con un errore e langchain solleva ValueError.
+    scritte = _chat(["Ciao", "Ciao", "esci"], SessioneFinta([ValueError("risposta non valida"), "Ciao!"]))
+    assert f"Impossibile contattare il modello su {URL}: risposta non valida" in scritte
+    assert "Assistente> Ciao!" in scritte
+    assert scritte[-1].strip() == "Ciao!"
+
+
+def test_errore_http_del_modello_non_parla_di_connessione():
+    # Es. cronologia oltre il contesto del modello: il server risponde, ma con un errore.
+    risposta = httpx.Response(400, request=httpx.Request("POST", URL))
+    errore = openai.BadRequestError("contesto troppo lungo", response=risposta, body=None)
+    scritte = _chat(["Ciao", "esci"], SessioneFinta([errore]))
+    assert "Errore dal modello (HTTP 400): contesto troppo lungo" in scritte
+    assert not any(s.startswith("Impossibile contattare") for s in scritte)
