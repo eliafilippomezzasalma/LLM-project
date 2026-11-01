@@ -39,3 +39,10 @@ def test_crea_modello_collega_gli_strumenti():
     modello = crea_modello(CONFIG, [crea_orologio()])
     nomi = [t["function"]["name"] for t in modello.kwargs["tools"]]
     assert nomi == ["get_current_time"]
+
+
+def test_crea_modello_disattiva_il_ragionamento():
+    # Con il ragionamento attivo LM Studio può mettere la risposta finale di Qwen in
+    # reasoning_content, che il client scarta: la risposta arriverebbe vuota.
+    modello = crea_modello(CONFIG, [crea_orologio()])
+    assert modello.bound.extra_body == {"reasoning_effort": "none"}
