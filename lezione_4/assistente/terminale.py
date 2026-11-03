@@ -7,10 +7,10 @@ from collections.abc import Callable
 import openai
 from mcp import StdioServerParameters
 
-from assistente.config import ErroreConfigurazione, carica_config
+from assistente.config import Config, ErroreConfigurazione, carica_config
 from assistente.grafo import costruisci_grafo
 from assistente.log import configura_log
-from assistente.mcp_remoto import ClientMCP, ErroreMCP, parametri_convertitore
+from assistente.mcp_remoto import ClientMCP, ErroreMCP, parametri_calcolatrice, parametri_convertitore
 from assistente.modello import crea_modello
 from assistente.orologio import crea_orologio
 from assistente.sessione import LimitePassaggiRaggiunto, Sessione
@@ -60,13 +60,33 @@ def esegui_chat(
         scrivi("\nCiao!")
 
 
-def collega_convertitore(parametri: StdioServerParameters | None = None) -> ClientMCP | None:
-    """Avvia il convertitore di unità (server MCP); None se non parte: la chat va avanti senza."""
+def _collega(nome: str, parametri: StdioServerParameters) -> ClientMCP | None:
+    """Avvia un server MCP; None se non parte: la chat va avanti senza."""
     try:
-        return ClientMCP.apri(parametri or parametri_convertitore())
+        return ClientMCP.apri(parametri)
     except ErroreMCP as errore:
-        log.warning("convertitore MCP non disponibile: %s", errore)
+        log.warning("%s MCP non disponibile: %s", nome, errore)
         return None
+
+
+def collega_convertitore(parametri: StdioServerParameters | None = None) -> ClientMCP | None:
+    """Avvia il convertitore di unità (server MCP); None se non parte."""
+    return _collega("convertitore", parametri or parametri_convertitore())
+
+
+def collega_calcolatrice(parametri: StdioServerParameters | None = None) -> ClientMCP | None:
+    """Avvia la calcolatrice sicura (server MCP); None se non parte."""
+    return _collega("calcolatrice", parametri or parametri_calcolatrice())
+
+
+def intestazione(config: Config, convertitore: bool, calcolatrice: bool) -> str:
+    """Le tre righe iniziali: modello e stato dei due server MCP."""
+    stato = {True: "attivo", False: "non disponibile"}
+    return (
+        f"Assistente del laboratorio — modello: {config.lm_model} @ {config.lm_base_url}\n"
+        f"Convertitore di unità (MCP): {stato[convertitore]}\n"
+        f"Calcolatrice (MCP): {stato[calcolatrice]}"
+    )
 
 
 def _usa_utf8() -> None:
@@ -84,17 +104,15 @@ def main() -> int:
         print(f"Configurazione non valida: {errore}", file=sys.stderr)
         return 1
     configura_log(config.log_level)
-    remoto = collega_convertitore()
+    convertitore, calcolatrice = collega_convertitore(), collega_calcolatrice()
+    remoti = [r for r in (convertitore, calcolatrice) if r]
     try:
-        strumenti = [crea_orologio(), *(remoto.strumenti() if remoto else [])]
+        strumenti = [crea_orologio(), *(s for r in remoti for s in r.strumenti())]
         modello = crea_modello(config, strumenti)
         grafo = costruisci_grafo(modello, crea_registro(strumenti), config.max_tool_steps)
-        intestazione = (
-            f"Assistente del laboratorio — modello: {config.lm_model} @ {config.lm_base_url}\n"
-            f"Convertitore di unità (MCP): {'attivo' if remoto else 'non disponibile'}"
-        )
-        esegui_chat(Sessione(grafo), intestazione, config.lm_base_url)
+        testo = intestazione(config, convertitore is not None, calcolatrice is not None)
+        esegui_chat(Sessione(grafo), testo, config.lm_base_url)
     finally:
-        if remoto:
+        for remoto in remoti:
             remoto.chiudi()
     return 0

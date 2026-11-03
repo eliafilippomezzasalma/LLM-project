@@ -9,7 +9,7 @@ import pytest
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from mcp import StdioServerParameters
 
-from assistente.mcp_remoto import ClientMCP, ErroreMCP, parametri_convertitore
+from assistente.mcp_remoto import ClientMCP, ErroreMCP, parametri_calcolatrice, parametri_convertitore
 
 NON_RAGGIUNGIBILE = "Errore: server MCP non raggiungibile"
 
@@ -94,3 +94,14 @@ def test_chiama_con_loop_appena_chiuso_restituisce_errore(convertitore, monkeypa
 
     monkeypatch.setattr("assistente.mcp_remoto.asyncio.run_coroutine_threadsafe", loop_chiuso)
     assert convertitore.chiama("convert_units", {"value": 1, "from_unit": "m", "to_unit": "m"}) == NON_RAGGIUNGIBILE
+
+
+def test_apre_e_espone_calculate():
+    client = ClientMCP.apri(parametri_calcolatrice())
+    try:
+        (strumento,) = client.strumenti()
+        assert strumento.name == "calculate"
+        assert strumento.invoke({"expression": "2^10"}) == "2^10 = 1024"
+        assert strumento.invoke({"expression": "10 / 0"}) == "Errore: divisione per zero"
+    finally:
+        client.chiudi()

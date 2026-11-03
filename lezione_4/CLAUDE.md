@@ -10,6 +10,8 @@ La cartella del progetto è `lezione_4/`. Specifica in `specs.md`, piano in
   `strumenti` (esecuzione delle chiamate), `modello` (client LM Studio), `grafo` (LangGraph),
   `sessione` (cronologia e prompt di sistema), `terminale` (chat, `python -m assistente`),
   `mcp_remoto` (ponte sincrono verso server MCP via stdio).
+- `calcolatrice.py`: server MCP della calcolatrice sicura (strumento `calculate`, senza `eval`);
+  specifica in `specs.md` §14, piano in `docs/superpowers/plans/` (2026-11-03).
 - `convertitore.py`: server MCP del convertitore di unità (strumento `convert_units`);
   specifica in `specs.md` §13, piano in `docs/superpowers/plans/` (2026-11-02).
 - `tests/`: test automatici con modello finto (`finti.py`); `test_reale.py` per LM Studio.
@@ -31,6 +33,8 @@ Un'applicazione da terminale in Python che conversa con un modello locale e:
   ed eseguito davvero dal programma;
 - offre un convertitore di unità tramite un server MCP separato (`convertitore.py`, stdio),
   con unità come elenco chiuso nello schema e validazione Pydantic con errori in italiano;
+- offre una calcolatrice sicura tramite un secondo server MCP (`calcolatrice.py`, stdio): espressioni
+  aritmetiche senza `eval`, con rifiuti espliciti in italiano;
 - si avvia anche con Docker Compose.
 
 ## Confini

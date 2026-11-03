@@ -143,3 +143,26 @@ def test_secondo_turno_vede_la_chiamata_al_convertitore():
     sessione.chiedi("Converti 10 km in miglia")
     sessione.chiedi("Grazie")
     assert any(isinstance(m, ToolMessage) and m.name == "convert_units" for m in modello.chiamate[-1])
+
+
+def test_prompt_sistema_impone_la_calcolatrice():
+    assert "calculate" in PROMPT_SISTEMA
+    assert "a mente" in PROMPT_SISTEMA
+    assert "'10 / 0'" in PROMPT_SISTEMA
+    assert "convert_units, non calculate" in PROMPT_SISTEMA
+    assert "parsec" in PROMPT_SISTEMA  # unità fuori elenco: niente conversioni fatte con calculate
+
+
+def test_cronologia_conserva_le_chiamate_alla_calcolatrice():
+    calcolatrice = StructuredTool.from_function(
+        lambda expression: f"{expression} = 22", name="calculate", description="finto"
+    )
+    registro = crea_registro([crea_orologio(), calcolatrice])
+    chiamata = ("calculate", {"expression": "(3.5 + 2) * 4"}, "c1")
+    modello = ModelloFinto([_chiede(chiamata), AIMessage("Fa 22.")])
+    sessione = Sessione(costruisci_grafo(modello, registro, max_passi=3))
+    assert sessione.chiedi("Quanto fa (3,5 + 2) * 4?") == "Fa 22."
+    tipi = [type(m) for m in sessione.cronologia]
+    assert tipi == [SystemMessage, HumanMessage, AIMessage, ToolMessage, AIMessage]
+    assert [c["name"] for c in sessione.cronologia[2].tool_calls] == ["calculate"]
+    assert sessione.cronologia[3].tool_call_id == "c1"

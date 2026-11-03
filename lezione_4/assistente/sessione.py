@@ -18,11 +18,19 @@ PROMPT_SISTEMA = (
     "Esempi: per «converti 2 anni luce in km» chiama convert_units con from_unit 'anni luce'; "
     "per «converti -300 °C in kelvin» chiama convert_units con value -300. "
     "Non descrivere da solo i limiti dello strumento: riporta il suo messaggio. "
-    "Se lo strumento restituisce un errore, spiegalo all'utente senza inventare un risultato."
+    "Se lo strumento restituisce un errore, spiegalo all'utente senza inventare un risultato. "
+    "Per ogni calcolo aritmetico, anche semplice, usa sempre lo strumento calculate e non fare i conti a mente. "
+    "Chiamalo anche quando pensi che il calcolo sia impossibile (per esempio una divisione per zero): "
+    "è lo strumento a verificarlo. "
+    "Esempio: per «quanto fa 10 / 0?» chiama calculate con expression '10 / 0'. "
+    "Per le conversioni di unità usa sempre convert_units, non calculate, anche quando l'unità "
+    "non è tra quelle ammesse (per esempio parsec): riporta il suo errore e non calcolare "
+    "la conversione da solo con calculate. "
+    "Se calculate restituisce un errore, riportalo senza proporre un risultato."
 )
 # Strumenti le cui chiamate restano nella cronologia: sono esempi utili al modello per
 # continuare a usarli. Le chiamate all'orologio no: un orario vecchio non deve restare.
-STRUMENTI_IN_CRONOLOGIA = frozenset({"convert_units"})
+STRUMENTI_IN_CRONOLOGIA = frozenset({"convert_units", "calculate"})
 RISPOSTA_VUOTA = "(nessuna risposta dal modello)"
 
 

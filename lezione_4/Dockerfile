@@ -12,6 +12,7 @@ RUN pip install -r requirements.txt
 
 COPY assistente/ assistente/
 COPY convertitore.py .
+COPY calcolatrice.py .
 
 RUN useradd --create-home app
 USER app

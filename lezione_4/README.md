@@ -6,8 +6,10 @@ nuovo `modello`), la cronologia dura quanto la sessione e il modello può chiede
 strumento **`get_current_time`**, che richiede sempre un fuso orario IANA (es. `Asia/Tokyo`).
 Può anche convertire unità di misura con lo strumento **`convert_units`**, offerto da un server
 **MCP** separato (`convertitore.py`) che l'assistente avvia da solo all'avvio.
+Per i conti usa la **calcolatrice sicura** `calculate` (`calcolatrice.py`, un secondo server MCP, senza `eval`).
 
 Specifica: [`specs.md`](specs.md) · Piano: [`implementation_plan.md`](implementation_plan.md)
+· Calcolatrice: specifica in [`specs.md`](specs.md) §14, [piano](docs/superpowers/plans/2026-11-03-calcolatrice-mcp.md)
 · Convertitore: [specifica](docs/superpowers/specs/2026-11-02-convertitore-mcp-design.md),
 [piano](docs/superpowers/plans/2026-11-02-convertitore-mcp.md)
 
@@ -25,6 +27,7 @@ assistente/
   terminale.py  chat da terminale (python -m assistente)
   mcp_remoto.py ponte sincrono verso un server MCP avviato via stdio
 convertitore.py server MCP del convertitore di unità (python convertitore.py)
+calcolatrice.py server MCP della calcolatrice sicura (python calcolatrice.py)
 tests/          test automatici (senza modello) e prova reale (test_reale.py)
 ```
 
@@ -110,6 +113,51 @@ numerico, temperatura sotto lo zero assoluto. Esempio di riga di log:
 Il server si può avviare anche da solo con `.\venv\Scripts\python.exe convertitore.py`: resta in
 attesa di messaggi MCP su stdin e termina quando l'input si chiude.
 
+### Calcolatrice sicura (MCP)
+
+Come il convertitore, `calcolatrice.py` è un server MCP che l'assistente lancia all'avvio; i due
+server sono indipendenti e l'intestazione dice di ciascuno se è `attivo` o `non disponibile`
+(`Calcolatrice (MCP): ...`). Lo strumento `calculate` riceve l'espressione come testo e **non usa
+`eval`**: un piccolo analizzatore scritto a mano riconosce solo ciò che è consentito.
+
+Accetta: numeri interi e decimali (virgola o punto, `3,5` = `3.5`), `+` `-` `*` `/`, la potenza `^`
+(anche `**`; `×` e `÷` valgono `*` e `/`), le parentesi tonde e il segno davanti a un numero.
+Precedenza matematica (`-2^2` = -4), aritmetica esatta (`0,1 + 0,2` = 0.3). Esempi: `(3,5 + 2) * 4` = 22, `2^10` = 1024.
+
+Rifiuta con un messaggio `Errore: ...` in italiano (nessun numero inventato):
+
+| Rifiuto | Esempio | Messaggio |
+|---|---|---|
+| divisione per zero | `10 / 0` | `Errore: divisione per zero` |
+| forma indeterminata | `0^0` | `Errore: 0^0 è una forma indeterminata` |
+| base negativa, esponente non intero | `(-8)^0,5` | `Errore: potenza con base negativa ed esponente non intero non supportata` |
+| risultato troppo grande | `10^1000` | `Errore: risultato troppo grande (oltre 10^100)` |
+| risultato troppo piccolo | `10^-1000` | `Errore: risultato troppo piccolo (sotto 10^-100)` |
+| carattere non consentito | `2 x 3` | `Errore: carattere non consentito 'x' in posizione 3: ...` |
+| numero scritto male | `3,5,2` | `Errore: numero scritto male '3,5,2' in posizione 1` |
+| operando mancante | `3 + * 2` | `Errore: manca un numero in posizione 5` |
+| operatore mancante | `2 3` | `Errore: manca un operatore prima di '3' in posizione 3` |
+| parentesi non chiusa | `(1 + 2` | `Errore: parentesi aperta in posizione 1 non chiusa` |
+| espressione troppo lunga | oltre 200 caratteri | `Errore: espressione troppo lunga (massimo 200 caratteri)` |
+
+Esempio di riga di log di un rifiuto:
+
+```
+23:25:40 WARNING strumenti: passo 1/3 calculate {"expression": "10 / 0"} -> Errore: divisione per zero
+```
+
+Il server si può avviare anche da solo con `.\venv\Scripts\python.exe calcolatrice.py`: resta in
+attesa di messaggi MCP su stdin e termina quando l'input si chiude.
+
+Uso dello strumento misurato il 2026-11-03 (locale, Qwen 3.5 9B, due giri): la calcolatrice è stata
+chiamata **in tutti i 44 calcoli**: 24 domande in sessione nuova su due giri (12 valide, 12 da
+rifiutare: `10 / 0`, `5 / (3 - 3)`, `0^0`, `2^1000`, «radice di 16»...) e due sessioni lunghe da 20
+domande miste (10 calcoli, più conversioni, orari e chiacchiere): 40 domande su 40 con lo strumento
+giusto, compresi tutti e 20 i calcoli. Il prompt dice anche di non usare `calculate` per le
+conversioni: in un giro, per «1 parsec in km», il modello aveva convertito da solo con `calculate`
+(sbagliando poi il risultato); dopo l'aggiunta di questa regola chiama `convert_units`, che rifiuta
+l'unità.
+
 ### Docker
 
 LM Studio resta sull'host; il container lo raggiunge su `http://host.docker.internal:1234/v1`
@@ -120,14 +168,14 @@ docker compose build
 docker compose run --rm assistente
 ```
 
-L'immagine contiene solo `assistente/`, `convertitore.py` e `requirements.txt` e gira come utente non-root `app`;
+L'immagine contiene solo `assistente/`, `convertitore.py`, `calcolatrice.py` e `requirements.txt` e gira come utente non-root `app`;
 il `.env` viene letto solo all'avvio. L'orario delle righe di log nel container è in UTC
 (l'ora restituita dallo strumento no: il fuso è sempre esplicito).
 
 ## Test
 
 Test automatici, senza modello (grafo, cronologia, instradamento, strumento con istante
-controllato, convertitore e server MCP vero avviato via stdio):
+controllato, convertitore, calcolatrice e server MCP veri avviati via stdio):
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q
@@ -142,7 +190,9 @@ Remove-Item Env:RUN_REAL_TESTS
 
 Verifica che il modello chiami davvero lo strumento con `Asia/Tokyo` e dia una risposta finale
 non vuota (circa 20 s con Qwen), e che usi `convert_units` per «Converti 10 km in miglia» (risultato
-6,21) e che per «Converti 5 kg in metri» non inventi un risultato.
+6,21) e che per «Converti 5 kg in metri» non inventi un risultato. Per la calcolatrice: «Quanto fa
+(3,5 + 2) * 4?» deve passare da `calculate` (22) e «Quanto fa 10 / 0?» deve **chiamare** `calculate`
+(test severo) e non dare un numero. I quattro casi con strumenti MCP avviano orologio, convertitore e calcolatrice.
 
 ### Prova manuale guidata
 
@@ -154,10 +204,13 @@ Avviare la chat (locale o Docker) e scrivere:
 4. `Come mi chiamo?` → «Elia» (cronologia della sessione).
 5. `Converti 10 km in miglia` → riga di log con `convert_units` e circa 6,21 miglia.
 6. `Converti 5 kg in metri` → riga di log `WARNING` con l'errore; l'assistente spiega che non si può.
-7. `esci` → `Ciao!`.
+7. `Quanto fa (3,5 + 2) * 4?` → riga di log con `calculate` e risposta 22.
+8. `Quanto fa 10 / 0?` → riga di log `WARNING` con `Errore: divisione per zero`; l'assistente lo spiega senza dare un numero.
+9. `esci` → `Ciao!`.
 
-Limite noto: al punto 3 il modello a volte (circa 1 volta su 6 nelle prove) non chiama lo
-strumento e calcola l'ora da quella di Tokyo, anche sbagliando. La riga di log permette di
+Limite noto: al punto 3 il modello a volte non chiama lo strumento e calcola l'ora da quella di
+Tokyo, spesso sbagliando (misure del 2026-11-03: 17 chiamate su 24, sia con sia senza la parte del
+prompt sulla calcolatrice). La riga di log permette di
 accorgersene: senza riga, l'ora non viene dallo strumento.
 
 Convertitore e cronologia: le chiamate a `convert_units` (con il loro risultato) restano nella
@@ -166,8 +219,12 @@ domande il modello smetteva di chiamare lo strumento e rispondeva a mente; il pr
 contiene anche due esempi di richieste da passare comunque allo strumento («anni luce», «-300 °C»).
 Prove del 2026-11-03 (Docker, Qwen 3.5 9B): sessione lunga di 19 domande con tutte le 13 conversioni
 fatte dallo strumento, errori compresi; casi di errore in sessione nuova 11 volte su 12 (una volta
-«10 litri in chilogrammi» è stata rifiutata a mente, senza numeri inventati). La riga di log dice
-sempre se il risultato o l'errore viene dallo strumento.
+«10 litri in chilogrammi» è stata rifiutata a mente, senza numeri inventati). Misure successive dello
+stesso giorno (locale, 12 casi di errore in sessione nuova per giro): 8/12 con il prompt senza la parte
+sulla calcolatrice, poi 10/12, 8/12 e infine 21/24 con il prompt attuale; «10 km in miglia» sempre con
+`convert_units` (9/9). I casi saltati («litri in kg», «anni luce», «pollici in grammi»…) sono
+rifiutati a mente senza numeri inventati, ma a volte il modello scrive «lo strumento dice…» senza
+averlo chiamato. La riga di log dice sempre se il risultato o l'errore viene dallo strumento.
 
 ## Diagnosi
 
@@ -182,5 +239,6 @@ sempre se il risultato o l'errore viene dallo strumento.
 | Nel container: errore di connessione | il container non raggiunge l'host | avviare con `docker compose run --rm assistente` (usa `host.docker.internal` e `extra_hosts` di `compose.yaml`); verificare che LM Studio sia acceso sull'host |
 | Risposte lente (15–60 s) | modello locale da 9B su CPU/GPU dell'host; la prima domanda carica il modello | normale; con `LOG_LEVEL=DEBUG` si vedono i messaggi inviati e la durata di ogni chiamata |
 | `Convertitore di unità (MCP): non disponibile` nell'intestazione | il server `convertitore.py` non è partito (dipendenza `mcp` mancante, file assente nell'immagine) | `pip install -r requirements.txt`; provare `python convertitore.py` per vedere l'errore; il motivo è anche nella riga di log `convertitore MCP non disponibile` |
-| `Errore: server MCP non raggiungibile` nel log | il server del convertitore si è interrotto durante la chat | riavviare l'assistente (non c'è riavvio automatico) |
+| `Calcolatrice (MCP): non disponibile` nell'intestazione | il server `calcolatrice.py` non è partito (dipendenza `mcp` mancante, file assente nell'immagine) | `pip install -r requirements.txt`; provare `python calcolatrice.py` per vedere l'errore; il motivo è anche nella riga di log `calcolatrice MCP non disponibile` |
+| `Errore: server MCP non raggiungibile` nel log | uno dei server (convertitore o calcolatrice) si è interrotto durante la chat | riavviare l'assistente (non c'è riavvio automatico) |
 | `(nessuna risposta dal modello)` | il modello ha restituito un testo vuoto | riprovare; con `LOG_LEVEL=DEBUG` si vede l'esito di ogni chiamata (`chiamata -> risposta finale (7.6s)` o richiesta di strumento) |

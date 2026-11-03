@@ -21,6 +21,7 @@ from mcp import Client, StdioServerParameters
 log = logging.getLogger("mcp")
 
 FILE_CONVERTITORE = Path(__file__).resolve().parent.parent / "convertitore.py"
+FILE_CALCOLATRICE = Path(__file__).resolve().parent.parent / "calcolatrice.py"
 NON_RAGGIUNGIBILE = "Errore: server MCP non raggiungibile"
 
 
@@ -31,6 +32,11 @@ class ErroreMCP(Exception):
 def parametri_convertitore() -> StdioServerParameters:
     """Comando che avvia il convertitore di unità con lo stesso Python dell'assistente."""
     return StdioServerParameters(command=sys.executable, args=[str(FILE_CONVERTITORE)])
+
+
+def parametri_calcolatrice() -> StdioServerParameters:
+    """Comando che avvia la calcolatrice sicura con lo stesso Python dell'assistente."""
+    return StdioServerParameters(command=sys.executable, args=[str(FILE_CALCOLATRICE)])
 
 
 class ClientMCP:

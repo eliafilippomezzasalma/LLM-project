@@ -1,5 +1,6 @@
 import io
 import sys
+from types import SimpleNamespace
 
 import httpx
 import openai
@@ -155,3 +156,63 @@ def test_collega_convertitore_riuscito():
         assert [s.name for s in remoto.strumenti()] == ["convert_units"]
     finally:
         remoto.chiudi()
+
+
+def test_collega_calcolatrice_fallito(caplog):
+    from mcp import StdioServerParameters
+
+    parametri = StdioServerParameters(command=sys.executable, args=["-c", "import sys; sys.exit(1)"])
+    with caplog.at_level("WARNING"):
+        assert terminale.collega_calcolatrice(parametri) is None
+    assert "calcolatrice MCP non disponibile" in caplog.text
+
+
+def test_collega_calcolatrice_riuscita():
+    remoto = terminale.collega_calcolatrice()
+    try:
+        assert [s.name for s in remoto.strumenti()] == ["calculate"]
+    finally:
+        remoto.chiudi()
+
+
+def test_intestazione_server_mcp():
+    config = SimpleNamespace(lm_model="m", lm_base_url=URL)
+    solo_conv = terminale.intestazione(config, True, False)
+    assert "Convertitore di unità (MCP): attivo" in solo_conv
+    assert "Calcolatrice (MCP): non disponibile" in solo_conv
+    solo_calc = terminale.intestazione(config, False, True)
+    assert "Convertitore di unità (MCP): non disponibile" in solo_calc
+    assert "Calcolatrice (MCP): attivo" in solo_calc
+
+
+def test_main_server_indipendenti_e_chiusi(monkeypatch):
+    class RemotoFinto:
+        chiuso = False
+
+        def strumenti(self):
+            return [SENTINELLA]
+
+        def chiudi(self):
+            self.chiuso = True
+
+    SENTINELLA = SimpleNamespace(name="calculate")
+    finto = RemotoFinto()
+    visto = {}
+
+    def chat(sessione, intestazione, indirizzo, **_):
+        visto["intestazione"] = intestazione
+
+    config = SimpleNamespace(lm_model="m", lm_base_url=URL, log_level="WARNING", max_tool_steps=3)
+    monkeypatch.setattr(terminale, "carica_config", lambda: config)
+    monkeypatch.setattr(terminale, "configura_log", lambda livello: None)
+    monkeypatch.setattr(terminale, "crea_modello",
+                        lambda config, strumenti: visto.update(strumenti=strumenti) or object())
+    monkeypatch.setattr(terminale, "costruisci_grafo", lambda *a, **k: object())
+    monkeypatch.setattr(terminale, "esegui_chat", chat)
+    monkeypatch.setattr(terminale, "collega_convertitore", lambda: None)
+    monkeypatch.setattr(terminale, "collega_calcolatrice", lambda: finto)
+    assert terminale.main() == 0
+    assert "Convertitore di unità (MCP): non disponibile" in visto["intestazione"]
+    assert "Calcolatrice (MCP): attivo" in visto["intestazione"]
+    assert finto.chiuso
+    assert SENTINELLA in visto["strumenti"]

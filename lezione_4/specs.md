@@ -359,3 +359,225 @@ piano: `docs/superpowers/plans/2026-11-02-convertitore-mcp.md`.
 - **Prompt**: usare sempre `convert_units`, mai calcoli a mente, con esempi.
 - **Limite misurato**: il modello non chiama sempre lo strumento per le conversioni
   impossibili (kg → m); il test reale verifica che non inventi numeri. Misure nel README.
+
+## 14. Calcolatrice sicura (MCP) — aggiunta il 2026-11-03
+
+Stato: implementata (2026-11-03); piano: `docs/superpowers/plans/2026-11-03-calcolatrice-mcp.md`.
+
+### 14.1 Intento
+
+Seconda funzionalità aggiuntiva dell'assistente della lezione 4, dopo il convertitore di unità.
+Testo del compito:
+
+> Calcolatrice sicura. Espressioni aritmetiche senza eval: solo operazioni consentite.
+> Allena il rifiuto esplicito di input non validi.
+
+Si aggiunge un **secondo server MCP separato** (come il convertitore, scelta dell'utente) che
+offre **un solo strumento**: una calcolatrice che riceve un'espressione come testo e restituisce
+il risultato, oppure un errore esplicito.
+
+A lezione l'utente vuole mostrare **entrambi i casi**: il calcolo che riesce e quello che viene
+rifiutato, con il motivo del rifiuto ben visibile. Il valore didattico è:
+1. **nessun `eval`**: l'espressione non viene mai eseguita come codice, ma letta da un piccolo
+   analizzatore scritto a mano che riconosce solo ciò che è consentito;
+2. **rifiuto esplicito**: ogni input non valido produce un messaggio chiaro in italiano che dice
+   cosa non va (e, quando ha senso, dove), mai un risultato inventato.
+
+### 14.2 Comportamento atteso (dall'utente)
+
+- «quanto fa (3,5 + 2) * 4?» → l'assistente chiama la calcolatrice e risponde 22.
+- «quanto fa 2^10?» → 1024, tramite la calcolatrice.
+- «quanto fa 10 / 0?» → la calcolatrice restituisce «Errore: divisione per zero» e l'assistente
+  lo spiega, **senza inventare un numero**.
+- Il modello deve **usare sempre la calcolatrice** per i conti, anche quelli banali e anche
+  quelli impossibili come 10 / 0. Che il modello risponda «impossibile» da solo, senza chiamare lo
+  strumento, è per l'utente **un problema**, anche se la risposta è corretta.
+
+### 14.3 Cosa è consentito (deciso dall'utente)
+
+- Le quattro operazioni: `+`, `-`, `*`, `/`.
+- L'elevamento a potenza con `^` (es. `2^3`), aggiunto dall'utente.
+- Le parentesi tonde.
+- I numeri interi e decimali, con **la virgola o il punto** come separatore decimale
+  (`3,5` e `3.5` valgono uguale).
+
+*Scelte mie:*
+- Il segno meno (e più) davanti a un numero o a una parentesi è ammesso: `-3 + 5`, `-(2 + 1)`,
+  `2^-1`.
+- Spazi ammessi ovunque tra i pezzi dell'espressione, ignorati.
+- `**` è accettato come sinonimo di `^` (i modelli tendono a scriverlo così); `×` e `÷` come
+  sinonimi di `*` e `/`. Nessun altro simbolo.
+- Regole di precedenza della matematica, non di Python: prima le parentesi, poi la potenza, poi
+  il segno davanti, poi `*` e `/`, infine `+` e `-`. La potenza è associativa a destra:
+  `2^3^2` = `2^(3^2)` = 512; `-2^2` = −4; `(-2)^2` = 4. `*`, `/`, `+`, `-` associativi a sinistra.
+
+### 14.4 Come si analizza (scelta mia: niente `eval`, niente `ast`)
+
+In Python `^` non è la potenza e ha una precedenza diversa, quindi il modulo `ast` darebbe
+risultati sbagliati per `2 + 3^2`. La calcolatrice usa invece un **piccolo analizzatore scritto
+a mano** (lettura a pezzi dell'espressione + discesa ricorsiva sulle regole di precedenza sopra),
+in Python puro, leggibile e spiegabile a lezione.
+
+Vincolo forte: nel codice della calcolatrice **non compaiono** `eval`, `exec`, `compile`,
+`ast.literal_eval` né altro modo di eseguire il testo ricevuto. Un test lo verifica sul sorgente.
+
+#### Aritmetica esatta (scelta mia)
+
+A lezione `0,1 + 0,2` deve dare `0.3`, non `0.30000000000000004`. Somme, differenze, prodotti,
+quozienti e potenze con esponente intero vanno quindi calcolati in modo esatto (per esempio con
+`fractions.Fraction`); una potenza con esponente non intero (`2^0,5`) dà un risultato
+approssimato. Lo strumento preciso è lasciato al costruttore, purché i test coprano questi casi.
+
+### 14.5 Rifiuti espliciti
+
+Ogni rifiuto produce un testo che inizia con `Errore:` seguito da un messaggio chiaro in
+italiano; nessuno fa cadere il server né la chat. Il server marca anche il risultato come
+errore nel protocollo MCP (come il convertitore), e l'assistente lo registra nel log come avviso.
+
+Rifiuti matematici (quelli che l'utente vuole mostrare per primi):
+1. **Divisione per zero**: `10 / 0`, `5 / (2 - 2)` → «divisione per zero».
+2. **Zero elevato a esponente negativo**: `0^-1` → «divisione per zero» (è la stessa cosa).
+3. *Scelta mia:* **`0^0`** → rifiutato come «forma indeterminata».
+4. **Base negativa con esponente non intero**: `(-8)^0,5`, `(-8)^(1/3)` → *scelta mia (dopo la
+   revisione):* rifiutato con un messaggio vero in ogni caso, «potenza con base negativa ed
+   esponente non intero non supportata» (non «non è un numero reale», che per `(-8)^(1/3)` = −2
+   sarebbe falso). Nessun calcolo di radici dispari.
+5. **Risultato troppo grande**: `9^9^9`, `10^1000` → «risultato troppo grande». Il controllo va
+   fatto **prima** di calcolare la potenza (stimando l'ordine di grandezza), altrimenti il server
+   si bloccherebbe. *Scelta mia:* limite a 10^100 in valore assoluto, sia per i risultati
+   intermedi sia per quello finale.
+5b. **Risultato troppo piccolo** (*scelta mia dopo la revisione*): un risultato diverso da zero
+   sotto 10^-100 in valore assoluto (`10^-1000`, `0,5^1000`, `10^-(9^9)`) → «risultato troppo
+   piccolo», controllato anch'esso **prima** del calcolo. Mostrare `0` sarebbe un numero
+   inventato; con frazioni esatte, senza limite il server si bloccherebbe.
+
+Rifiuti di forma (*scelte mie*, necessarie per non accettare in silenzio input sbagliati):
+6. **Espressione vuota** o fatta solo di spazi.
+7. **Carattere non consentito**: lettere, nomi di funzioni, `%`, `=`, ecc. Il messaggio indica
+   il carattere e la sua posizione (es. «carattere non consentito 'x' in posizione 3») e
+   ricorda cosa è ammesso.
+8. **Numero scritto male**: più di un separatore decimale (`3,5,2`, `1.000,5`), separatore
+   senza cifre (`3,` o `,5`, *scelta mia:* rifiutati).
+   *Scelta mia (dopo la revisione):* virgola e punto sono **sempre** separatori decimali, mai
+   delle migliaia: `1.000` vale 1. Le espressioni le scrive il modello, che usa il punto
+   decimale (`0.125`); trattare `.` seguito da tre cifre come migliaia sarebbe peggio.
+9. **Espressione malformata**: operatore senza operando (`3 + * 2`, `4 /`), parentesi non chiusa
+   o chiusa in più, parentesi vuote `()`, due numeri affiancati senza operatore (`2 3`,
+   moltiplicazione implicita `2(3)` non ammessa). Il messaggio dice cosa manca e dove.
+10. **Espressione troppo lunga**: *scelta mia:* oltre 200 caratteri, oppure parentesi annidate
+    oltre 30 livelli (protegge la discesa ricorsiva).
+11. **Argomento mancante o non testuale** (il modello manda un numero o niente): messaggio che
+    dice che serve un'espressione scritta come testo.
+
+Il testo degli errori deve bastare al modello per spiegare all'utente cosa è andato storto
+senza ripetere il calcolo da solo.
+
+### 14.6 Risultato restituito al modello
+
+*Scelta mia:* testo breve con l'espressione e il risultato, ad esempio `(3,5 + 2) * 4 = 22`
+(l'espressione come l'ha mandata il modello, il risultato con il **punto** decimale, come il
+convertitore). Interi senza decimali (`22`, non `22.0`); decimali con al massimo una decina di
+cifre significative, senza zeri finali; risultati periodici arrotondati (`1 / 3 = 0.3333333333`).
+Il formato preciso è lasciato al costruttore, purché coerente e coperto dai test.
+
+### 14.7 Come si costruisce
+
+Struttura analoga al convertitore, per poterli confrontare a lezione:
+
+- **Server**: `lezione_4/calcolatrice.py`, avviabile da solo (`python calcolatrice.py`),
+  libreria `mcp` già presente (2.3.0), trasporto **stdio**, **un solo strumento**.
+  *Scelta mia:* nome `calculate`, un argomento `expression` (stringa); la descrizione dello
+  strumento elenca in inglese le operazioni ammesse e dice che anche i calcoli impossibili vanno
+  mandati alla calcolatrice.
+- **Logica separata dal protocollo**: analizzatore, calcolo e messaggi di errore in funzioni
+  Python pure, testabili senza MCP; lo strato MCP è sottile e non contiene logica di calcolo.
+- **Lato assistente**: riuso del ponte sincrono esistente `assistente/mcp_remoto.py`
+  (`ClientMCP`), con una seconda istanza per la calcolatrice; servirà un
+  `parametri_calcolatrice()` accanto a `parametri_convertitore()`. Il collegamento in
+  `terminale.py` va generalizzato in modo che i due server siano **indipendenti**: se uno non
+  parte, l'assistente parte comunque con gli altri strumenti; entrambi vengono chiusi all'uscita.
+- **Intestazione della chat**: una riga «Calcolatrice (MCP): attivo / non disponibile» sotto
+  quella del convertitore.
+- **Grafo e registro** (`grafo.py`, `strumenti.py`) non cambiano struttura: lo strumento entra
+  nella stessa lista dell'orologio e del convertitore.
+- **Cronologia**: *scelta mia:* le chiamate a `calculate` restano nella cronologia della
+  sessione, come quelle a `convert_units`.
+- **Docker**: il `Dockerfile` copia anche `calcolatrice.py`; nessun servizio in più.
+- **Nessuna dipendenza nuova.**
+
+### 14.8 Usare sempre la calcolatrice (deciso dall'utente)
+
+L'utente vuole che il modello usi **sempre** la calcolatrice. Scelta dell'utente sul come:
+**rafforzare il prompt di sistema e misurare** quante volte la usa, come per il convertitore.
+**Non** si forza la chiamata dal codice (niente `tool_choice` obbligato né riconoscimento
+automatico delle espressioni nel messaggio).
+
+Il prompt di sistema (`sessione.py`) va esteso per dire che ogni calcolo aritmetico, anche
+semplice o impossibile (es. una divisione per zero), va fatto con `calculate` e mai a mente, e
+che in caso di errore va riferito il messaggio senza proporre un risultato. Esempi concreti nel
+prompt sono ammessi (come per il convertitore). Al costruttore il testo preciso, da affinare con
+le misure.
+
+### 14.9 Test e verifiche
+
+Stessa impostazione della lezione 4 e del convertitore:
+- **test automatici senza modello**: ogni operazione e la precedenza (inclusi `2^3^2`, `-2^2`,
+  `2 + 3^2`), virgola e punto, sinonimi `**`/`×`/`÷`, aritmetica esatta (`0,1 + 0,2`), formato
+  del risultato, **ogni rifiuto** dell'elenco sopra con il suo messaggio, `9^9^9` rifiutato in
+  tempi brevi, assenza di `eval`/`exec`/`compile` nel sorgente; test del server MCP in-process e
+  via stdio; test del collegamento nell'assistente (i due server indipendenti, l'intestazione);
+- **prove reali con LM Studio** (attivate con `RUN_REAL_TESTS=1`, in `test_reale.py`):
+  «(3,5 + 2) * 4» → 22 tramite lo strumento; «10 / 0» → lo strumento è stato **chiamato** e la
+  risposta non contiene un numero inventato;
+- **misure**: quante volte su N domande il modello usa la calcolatrice, in sessione nuova e in
+  sessione lunga, sia per calcoli validi sia per quelli rifiutati (in particolare 10 / 0), come
+  fatto per il convertitore; i numeri vanno riportati all'utente e il limite, se resta, scritto
+  nel README;
+- **quando è finito** (deciso dall'utente): il test reale «10 / 0 → strumento chiamato» resta
+  **severo** (non si ammorbidisce come quello del convertitore); il prompt si ritocca per alcuni
+  giri, poi ci si ferma e si riporta nel README il tasso misurato, senza una soglia minima
+  bloccante;
+- **regressione sugli altri strumenti** (deciso dall'utente): dopo il cambio di prompt si
+  rifanno le misure di orologio e convertitore (inclusa qualche domanda mista, es. una
+  conversione che non deve finire alla calcolatrice) e si confrontano con quelle nel README;
+- **prova Docker**: la calcolatrice funziona anche nel container, intestazione «attivo».
+
+### 14.10 Obiettivi
+
+- Server MCP separato con la sola calcolatrice, senza `eval`.
+- Quattro operazioni, potenza `^`, parentesi, decimali con virgola o punto.
+- Rifiuti espliciti e chiari per gli errori matematici e di forma elencati sopra.
+- L'assistente usa la calcolatrice tramite MCP, anche in Docker, con un tasso misurato.
+
+### 14.11 Non-obiettivi
+
+- Funzioni (radice, seno, logaritmo…), costanti (π, e), variabili, percentuale, modulo,
+  divisione intera, confronti.
+- Forzare dal codice la chiamata allo strumento.
+- Unire calcolatrice e convertitore nello stesso server, o spostare l'orologio su MCP.
+- Trasporto HTTP o uso da client esterni.
+
+### 14.12 Anti-obiettivi (sarebbe un fallimento anche se «funziona»)
+
+- Qualsiasi uso di `eval`, `exec`, `compile` o equivalenti sul testo ricevuto.
+- Il modello che fa i conti a mente, o che risponde a «10 / 0» senza chiamare la calcolatrice.
+- Un numero inventato per un'espressione rifiutata.
+- Un input non valido accettato in silenzio o «corretto» senza dirlo.
+- Un server bloccato da un'espressione come `9^9^9`, o un errore che fa cadere la chat.
+- Logica di calcolo mescolata al codice del protocollo.
+
+### 14.13 Vincoli di lavoro
+
+- Solo in `lezione_4/`, sul branch `feature/nuove-funzionalita`.
+- **Commit e push solo su richiesta esplicita dell'utente.**
+- Aggiornare `CLAUDE.md` e `README.md` (struttura, avvio, test, limiti misurati).
+- Comandi documentati per PowerShell.
+
+### 14.14 Lasciato al costruttore
+
+- Struttura interna dell'analizzatore e nomi delle funzioni.
+- Come rendere esatta l'aritmetica (purché i casi di test passino).
+- Testo esatto dei messaggi di errore (italiano, chiaro, con posizione dove indicato).
+- Testo esatto del prompt di sistema e della descrizione dello strumento, da affinare con le
+  misure.
+- Come generalizzare il collegamento dei server MCP in `terminale.py`.
