@@ -1,6 +1,11 @@
-# Assistente del laboratorio con orologio — Specifica
+# Assistente del laboratorio — Specifica
 
-Data: 2026-10-26 · Cartella: `lezione_4/` · Stato: approvata
+Data: 2026-10-26 (orologio), aggiornata il 2026-11-03 · Cartella: `lezione_4/`
+
+Documento unico e cumulativo: le sezioni 1–12 descrivono l'assistente originale con l'orologio
+(approvate il 2026-10-26); ogni strumento aggiunto dopo ha una propria sezione dalla 13 in poi,
+che estende o sostituisce le regole precedenti dove lo dice esplicitamente (per esempio i
+non-obiettivi del §3 su altri strumenti e MCP).
 
 ## 1. Intento
 
@@ -333,3 +338,24 @@ revisore indipendente a implementazione finita.
   informazioni elencate.
 - Struttura del README, purché copra configurazione, avvio (locale e Docker), test e
   diagnosi con comandi verificati.
+
+## 13. Convertitore di unità (MCP) — aggiunto il 2026-11-02
+
+Stato: implementato e verificato (commit `e70470f`). Documento di dettaglio originale, scritto
+prima della regola dello `specs.md` unico: `docs/superpowers/specs/2026-11-02-convertitore-mcp-design.md`;
+piano: `docs/superpowers/plans/2026-11-02-convertitore-mcp.md`.
+
+- **Cosa**: server MCP separato `convertitore.py` (stdio, libreria `mcp` 2.3.0) con un solo
+  strumento `convert_units(value, from_unit, to_unit)`. L'assistente lo avvia all'avvio
+  tramite il ponte sincrono `assistente/mcp_remoto.py` (`ClientMCP`) e lo mette nella stessa
+  lista dell'orologio; se non parte, la chat va avanti senza e l'intestazione lo segnala.
+- **Schema e validazione**: unità come elenco chiuso (23 unità in 6 grandezze: lunghezza,
+  massa, tempo, temperatura, volume, velocità) dentro un modello Pydantic che è insieme lo
+  schema JSON mostrato al modello e il controllo vero; tabella chiusa di sinonimi; errori in
+  italiano per unità fuori elenco, grandezze incompatibili, valore non finito, temperatura
+  sotto lo zero assoluto.
+- **Risultato**: testo breve (`10 km = 6.21371 mi`); errori come `Errore: ...` marcati come
+  errore MCP e registrati a WARNING. Le chiamate restano nella cronologia della sessione.
+- **Prompt**: usare sempre `convert_units`, mai calcoli a mente, con esempi.
+- **Limite misurato**: il modello non chiama sempre lo strumento per le conversioni
+  impossibili (kg → m); il test reale verifica che non inventi numeri. Misure nel README.

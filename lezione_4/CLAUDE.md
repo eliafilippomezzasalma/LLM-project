@@ -10,8 +10,8 @@ La cartella del progetto è `lezione_4/`. Specifica in `specs.md`, piano in
   `strumenti` (esecuzione delle chiamate), `modello` (client LM Studio), `grafo` (LangGraph),
   `sessione` (cronologia e prompt di sistema), `terminale` (chat, `python -m assistente`),
   `mcp_remoto` (ponte sincrono verso server MCP via stdio).
-- `convertitore.py`: server MCP del convertitore di unità (strumento `convert_units`); spec e
-  piano in `docs/superpowers/specs/` e `docs/superpowers/plans/` (2026-11-02).
+- `convertitore.py`: server MCP del convertitore di unità (strumento `convert_units`);
+  specifica in `specs.md` §13, piano in `docs/superpowers/plans/` (2026-11-02).
 - `tests/`: test automatici con modello finto (`finti.py`); `test_reale.py` per LM Studio.
 - `Dockerfile`, `.dockerignore`, `compose.yaml`: immagine solo runtime, LM Studio sull'host.
 - Dipendenze: `requirements.txt` (runtime, versioni fissate), `requirements-dev.txt` (+ pytest).
@@ -56,7 +56,9 @@ Un'applicazione da terminale in Python che conversa con un modello locale e:
 ## Metodo: Superpowers
 - Usare le skill di Superpowers per brainstorming, specifica, piano, implementazione e verifica.
 - Non scrivere codice prima che io abbia approvato la specifica e poi il piano.
-- Salvare specifica e piano in `lezione_4/docs/superpowers/`.
+- Specifica unica e cumulativa: `specs.md`. Ogni nuovo strumento vi aggiunge una propria
+  sezione (dalla 13 in poi), niente documenti di specifica separati per strumento.
+- Salvare i piani in `lezione_4/docs/superpowers/plans/`.
 - Procedere per incrementi piccoli, ciascuno verificato prima del commit.
 
 ## Test e verifiche
