@@ -5,10 +5,12 @@ import sys
 from collections.abc import Callable
 
 import openai
+from mcp import StdioServerParameters
 
 from assistente.config import ErroreConfigurazione, carica_config
 from assistente.grafo import costruisci_grafo
 from assistente.log import configura_log
+from assistente.mcp_remoto import ClientMCP, ErroreMCP, parametri_convertitore
 from assistente.modello import crea_modello
 from assistente.orologio import crea_orologio
 from assistente.sessione import LimitePassaggiRaggiunto, Sessione
@@ -58,6 +60,15 @@ def esegui_chat(
         scrivi("\nCiao!")
 
 
+def collega_convertitore(parametri: StdioServerParameters | None = None) -> ClientMCP | None:
+    """Avvia il convertitore di unità (server MCP); None se non parte: la chat va avanti senza."""
+    try:
+        return ClientMCP.apri(parametri or parametri_convertitore())
+    except ErroreMCP as errore:
+        log.warning("convertitore MCP non disponibile: %s", errore)
+        return None
+
+
 def _usa_utf8() -> None:
     # Su Windows, con output rediretto, Python userebbe cp1252 e rovinerebbe «—» e «lunedì».
     for flusso in (sys.stdout, sys.stderr):
@@ -65,7 +76,7 @@ def _usa_utf8() -> None:
 
 
 def main() -> int:
-    """Avvia l'assistente: configurazione, log, strumenti, modello, grafo e chat."""
+    """Avvia l'assistente: configurazione, log, strumenti (anche via MCP), modello, grafo e chat."""
     _usa_utf8()
     try:
         config = carica_config()
@@ -73,9 +84,17 @@ def main() -> int:
         print(f"Configurazione non valida: {errore}", file=sys.stderr)
         return 1
     configura_log(config.log_level)
-    strumenti = [crea_orologio()]
-    modello = crea_modello(config, strumenti)
-    grafo = costruisci_grafo(modello, crea_registro(strumenti), config.max_tool_steps)
-    intestazione = f"Assistente del laboratorio — modello: {config.lm_model} @ {config.lm_base_url}"
-    esegui_chat(Sessione(grafo), intestazione, config.lm_base_url)
+    remoto = collega_convertitore()
+    try:
+        strumenti = [crea_orologio(), *(remoto.strumenti() if remoto else [])]
+        modello = crea_modello(config, strumenti)
+        grafo = costruisci_grafo(modello, crea_registro(strumenti), config.max_tool_steps)
+        intestazione = (
+            f"Assistente del laboratorio — modello: {config.lm_model} @ {config.lm_base_url}\n"
+            f"Convertitore di unità (MCP): {'attivo' if remoto else 'non disponibile'}"
+        )
+        esegui_chat(Sessione(grafo), intestazione, config.lm_base_url)
+    finally:
+        if remoto:
+            remoto.chiudi()
     return 0

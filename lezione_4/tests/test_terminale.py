@@ -138,3 +138,20 @@ def test_errore_http_del_modello_non_parla_di_connessione():
     scritte = _chat(["Ciao", "esci"], SessioneFinta([errore]))
     assert "Errore dal modello (HTTP 400): contesto troppo lungo" in scritte
     assert not any(s.startswith("Impossibile contattare") for s in scritte)
+
+
+def test_collega_convertitore_fallito(caplog):
+    from mcp import StdioServerParameters
+
+    parametri = StdioServerParameters(command=sys.executable, args=["-c", "import sys; sys.exit(1)"])
+    with caplog.at_level("WARNING"):
+        assert terminale.collega_convertitore(parametri) is None
+    assert "convertitore MCP non disponibile" in caplog.text
+
+
+def test_collega_convertitore_riuscito():
+    remoto = terminale.collega_convertitore()
+    try:
+        assert [s.name for s in remoto.strumenti()] == ["convert_units"]
+    finally:
+        remoto.chiudi()

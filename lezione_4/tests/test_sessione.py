@@ -1,5 +1,6 @@
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 
 from assistente.grafo import costruisci_grafo
 from assistente.orologio import crea_orologio
@@ -78,3 +79,67 @@ def test_think_rimosso_da_cronologia():
     sessione = _sessione(ModelloFinto([AIMessage("<think>ragiono</think>Ciao!")]))
     assert sessione.chiedi("Ciao") == "Ciao!"
     assert sessione.cronologia[-1].content == "Ciao!"
+
+
+def test_prompt_sistema_impone_il_convertitore():
+    assert "convert_units" in PROMPT_SISTEMA
+    assert "non fare i calcoli a mente" in PROMPT_SISTEMA
+    assert "senza inventare un risultato" in PROMPT_SISTEMA
+    assert "anche quando pensi che la " in PROMPT_SISTEMA
+
+
+def test_prompt_sistema_ha_esempi_di_errore():
+    # Prova reale: con «anni luce» o «-300 °C» il modello rifiutava da solo senza chiamare
+    # lo strumento; gli esempi espliciti gli dicono di chiamarlo comunque.
+    assert "anni luce" in PROMPT_SISTEMA
+    assert "-300 °C" in PROMPT_SISTEMA
+
+
+def _converti(value, from_unit, to_unit):
+    return f"{value:g} {from_unit} = ? {to_unit}"
+
+
+CONVERTITORE_FINTO = StructuredTool.from_function(_converti, name="convert_units", description="finto")
+REGISTRO_CON_CONVERTITORE = crea_registro([crea_orologio(), CONVERTITORE_FINTO])
+
+
+def _chiede(*chiamate) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": n, "args": a, "id": i, "type": "tool_call"} for n, a, i in chiamate],
+    )
+
+
+KM_MI = ("convert_units", {"value": 10, "from_unit": "km", "to_unit": "mi"}, "k1")
+
+
+def test_cronologia_conserva_le_chiamate_al_convertitore():
+    # Prova reale: senza esempi nella cronologia, dopo una dozzina di domande il modello
+    # smetteva di chiamare il convertitore e rispondeva a mente.
+    modello = ModelloFinto([_chiede(KM_MI), AIMessage("Sono 6,21 miglia.")])
+    sessione = Sessione(costruisci_grafo(modello, REGISTRO_CON_CONVERTITORE, max_passi=3))
+    assert sessione.chiedi("Converti 10 km in miglia") == "Sono 6,21 miglia."
+    tipi = [type(m) for m in sessione.cronologia]
+    assert tipi == [SystemMessage, HumanMessage, AIMessage, ToolMessage, AIMessage]
+    assert [c["name"] for c in sessione.cronologia[2].tool_calls] == ["convert_units"]
+    assert sessione.cronologia[3].content == "10 km = ? mi"
+    assert sessione.cronologia[3].tool_call_id == "k1"
+
+
+def test_cronologia_toglie_l_orologio_da_una_chiamata_mista():
+    ora = ("get_current_time", {"timezone": "Asia/Tokyo"}, "o1")
+    modello = ModelloFinto([_chiede(ora, KM_MI), AIMessage("Fatto.")])
+    sessione = Sessione(costruisci_grafo(modello, REGISTRO_CON_CONVERTITORE, max_passi=3))
+    sessione.chiedi("Che ore sono a Tokyo e quanto fanno 10 km in miglia?")
+    chiamate = [c["name"] for m in sessione.cronologia if isinstance(m, AIMessage) for c in m.tool_calls]
+    risposte = [m.name for m in sessione.cronologia if isinstance(m, ToolMessage)]
+    assert chiamate == ["convert_units"]
+    assert risposte == ["convert_units"]
+
+
+def test_secondo_turno_vede_la_chiamata_al_convertitore():
+    modello = ModelloFinto([_chiede(KM_MI), AIMessage("Sono 6,21 miglia."), AIMessage("Prego.")])
+    sessione = Sessione(costruisci_grafo(modello, REGISTRO_CON_CONVERTITORE, max_passi=3))
+    sessione.chiedi("Converti 10 km in miglia")
+    sessione.chiedi("Grazie")
+    assert any(isinstance(m, ToolMessage) and m.name == "convert_units" for m in modello.chiamate[-1])

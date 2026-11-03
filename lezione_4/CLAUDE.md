@@ -8,7 +8,10 @@ La cartella del progetto è `lezione_4/`. Specifica in `specs.md`, piano in
 ## Struttura
 - `assistente/`: `config` (variabili d'ambiente), `log` (stderr), `orologio` (strumento),
   `strumenti` (esecuzione delle chiamate), `modello` (client LM Studio), `grafo` (LangGraph),
-  `sessione` (cronologia e prompt di sistema), `terminale` (chat, `python -m assistente`).
+  `sessione` (cronologia e prompt di sistema), `terminale` (chat, `python -m assistente`),
+  `mcp_remoto` (ponte sincrono verso server MCP via stdio).
+- `convertitore.py`: server MCP del convertitore di unità (strumento `convert_units`); spec e
+  piano in `docs/superpowers/specs/` e `docs/superpowers/plans/` (2026-11-02).
 - `tests/`: test automatici con modello finto (`finti.py`); `test_reale.py` per LM Studio.
 - `Dockerfile`, `.dockerignore`, `compose.yaml`: immagine solo runtime, LM Studio sull'host.
 - Dipendenze: `requirements.txt` (runtime, versioni fissate), `requirements-dev.txt` (+ pytest).
@@ -26,15 +29,18 @@ Un'applicazione da terminale in Python che conversa con un modello locale e:
 - conserva la cronologia della conversazione per la durata della sessione (nessuna persistenza);
 - offre uno strumento orologio con fuso orario esplicito, richiesto dal modello tramite tool calling
   ed eseguito davvero dal programma;
+- offre un convertitore di unità tramite un server MCP separato (`convertitore.py`, stdio),
+  con unità come elenco chiuso nello schema e validazione Pydantic con errori in italiano;
 - si avvia anche con Docker Compose.
 
 ## Confini
-- Implementare solo i requisiti concordati. Altri strumenti, MCP, workflow e RAG arriveranno
-  nelle lezioni successive: non anticiparli.
+- Implementare solo i requisiti concordati. Le nuove funzionalità si aggiungono una alla volta,
+  ciascuna con specifica e piano approvati; workflow e RAG non vanno anticipati.
 - Niente interfacce grafiche, servizi cloud o framework non concordati.
 - Lavorare solo dentro `lezione_4/`. La repository contiene altre lezioni:
   non leggerle per copiarne il codice e non modificarle.
-- Lavorare nel branch corrente; nessun branch o worktree nuovo se non richiesto.
+- Le nuove funzionalità si sviluppano nel branch `feature/nuove-funzionalita`; nessun altro
+  branch o worktree se non richiesto.
 
 ## Scelte tecniche
 - Python, codice sincrono e moduli piccoli, con una separazione semplice tra
@@ -65,7 +71,7 @@ Un'applicazione da terminale in Python che conversa con un modello locale e:
   `docs: ...`.
 - Prima di ogni commit: `git status`, controllo del diff, staging selettivo dei soli file pertinenti.
 - Mai versionare credenziali, `.env`, ambienti virtuali, cache o pesi dei modelli.
-- Push soltanto su mia richiesta.
+- Commit e push soltanto su mia richiesta.
 
 ## Documentazione
 - Tenere aggiornato il README con configurazione, avvio, test e diagnosi, riportando solo
