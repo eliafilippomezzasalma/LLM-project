@@ -26,7 +26,13 @@ PROMPT_SISTEMA = (
     "Per le conversioni di unità usa sempre convert_units, non calculate, anche quando l'unità "
     "non è tra quelle ammesse (per esempio parsec): riporta il suo errore e non calcolare "
     "la conversione da solo con calculate. "
-    "Se calculate restituisce un errore, riportalo senza proporre un risultato."
+    "Se calculate restituisce un errore, spiega all'utente il motivo e fermati: non dare il risultato, "
+    "nemmeno calcolato a mente o riscrivendo l'operazione in un altro modo, e non fare altre chiamate "
+    "per aggirare l'errore. Dopo un errore la risposta non contiene il valore richiesto, "
+    "anche se lo conosci. "
+    "Anche per radici, seni, logaritmi o altre funzioni chiama comunque calculate con l'espressione "
+    "richiesta: è lo strumento a dire che cosa è ammesso. Esempio: per «calcola la radice di 16» chiama "
+    "calculate con expression 'sqrt(16)' e, se risponde con un errore, spiegalo senza dire quanto vale."
 )
 # Strumenti le cui chiamate restano nella cronologia: sono esempi utili al modello per
 # continuare a usarli. Le chiamate all'orologio no: un orario vecchio non deve restare.

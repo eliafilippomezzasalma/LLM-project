@@ -158,6 +158,14 @@ conversioni: in un giro, per «1 parsec in km», il modello aveva convertito da 
 (sbagliando poi il risultato); dopo l'aggiunta di questa regola chiama `convert_units`, che rifiuta
 l'unità.
 
+Dopo un rifiuto il modello spiega il motivo e **si ferma**: non dà il risultato a mente né riscrive
+l'operazione per aggirare l'errore. Le funzioni non ammesse (radice, seno, logaritmo…) vanno comunque
+mandate a `calculate` (per «radice di 16» con `sqrt(16)`), che le rifiuta. Il prompt non elenca ciò che
+la calcolatrice non supporta: con quella descrizione il modello rispondeva da solo senza chiamarla
+(1 volta su 10 con lo strumento) e dava comunque il risultato. Misura del 2026-11-03 col prompt attuale:
+radice di 16 ×6, seno di 30 ×2, logaritmo di 1000 ×2 → strumento sempre chiamato e nessun risultato
+nella risposta (10/10); controlli `10 / 0`, `2^10`, `(3,5 + 2) * 4` corretti.
+
 ### Docker
 
 LM Studio resta sull'host; il container lo raggiunge su `http://host.docker.internal:1234/v1`

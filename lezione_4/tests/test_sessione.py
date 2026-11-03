@@ -153,6 +153,19 @@ def test_prompt_sistema_impone_la_calcolatrice():
     assert "parsec" in PROMPT_SISTEMA  # unità fuori elenco: niente conversioni fatte con calculate
 
 
+def test_prompt_sistema_dopo_un_rifiuto_si_ferma():
+    # Dopo un errore di calculate il modello spiega e si ferma: nessun risultato a mente
+    # né operazione riscritta (es. «radice di 16» non diventa 16^0,5).
+    assert "fermati" in PROMPT_SISTEMA
+    assert "nemmeno calcolato a mente" in PROMPT_SISTEMA
+    assert "non fare altre chiamate" in PROMPT_SISTEMA  # niente aggiramenti come 4 ^ 2 per la radice
+    # Le funzioni non ammesse vanno comunque mandate allo strumento: descrivere nel prompt
+    # che cosa non è supportato porta il modello a rispondere da solo (misure del 2026-11-03).
+    assert "chiama comunque calculate" in PROMPT_SISTEMA
+    assert "expression 'sqrt(16)'" in PROMPT_SISTEMA
+    assert "non è supportata" not in PROMPT_SISTEMA
+
+
 def test_cronologia_conserva_le_chiamate_alla_calcolatrice():
     calcolatrice = StructuredTool.from_function(
         lambda expression: f"{expression} = 22", name="calculate", description="finto"
