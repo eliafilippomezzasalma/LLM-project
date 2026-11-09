@@ -22,6 +22,7 @@ log = logging.getLogger("mcp")
 
 FILE_CONVERTITORE = Path(__file__).resolve().parent.parent / "convertitore.py"
 FILE_CALCOLATRICE = Path(__file__).resolve().parent.parent / "calcolatrice.py"
+FILE_SCADENZE = Path(__file__).resolve().parent.parent / "scadenze.py"
 NON_RAGGIUNGIBILE = "Errore: server MCP non raggiungibile"
 
 
@@ -37,6 +38,11 @@ def parametri_convertitore() -> StdioServerParameters:
 def parametri_calcolatrice() -> StdioServerParameters:
     """Comando che avvia la calcolatrice sicura con lo stesso Python dell'assistente."""
     return StdioServerParameters(command=sys.executable, args=[str(FILE_CALCOLATRICE)])
+
+
+def parametri_scadenze() -> StdioServerParameters:
+    """Comando che avvia il server di giorni e scadenze con lo stesso Python dell'assistente."""
+    return StdioServerParameters(command=sys.executable, args=[str(FILE_SCADENZE)])
 
 
 class ClientMCP:

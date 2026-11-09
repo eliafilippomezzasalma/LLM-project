@@ -1,6 +1,6 @@
 # Assistente del laboratorio — Specifica
 
-Data: 2026-10-26 (orologio), aggiornata il 2026-11-03 · Cartella: `lezione_4/`
+Data: 2026-10-26 (orologio), aggiornata il 2026-11-09 · Cartella: `lezione_4/`
 
 Documento unico e cumulativo: le sezioni 1–12 descrivono l'assistente originale con l'orologio
 (approvate il 2026-10-26); ogni strumento aggiunto dopo ha una propria sezione dalla 13 in poi,
@@ -581,3 +581,329 @@ Stessa impostazione della lezione 4 e del convertitore:
 - Testo esatto del prompt di sistema e della descrizione dello strumento, da affinare con le
   misure.
 - Come generalizzare il collegamento dei server MCP in `terminale.py`.
+
+## 15. Giorni e scadenze (MCP) — aggiunta il 2026-11-09
+
+Stato: implementata (2026-11-09).
+
+### 15.1 Intento
+
+Terza funzionalità aggiuntiva dell'assistente della lezione 4, dopo convertitore e calcolatrice.
+Testo del compito:
+
+> Giorni e scadenze. Date ISO e festività da file locale, risultato non normativo.
+> Allena formati e casi limite.
+
+Si aggiunge un **terzo server MCP separato** (*scelta mia*, per coerenza con i due precedenti)
+che risponde a domande su date e scadenze: «quando scade il mio contratto d'affitto?», «che
+giorno sarà fra 10 giorni lavorativi?», «il 2 giugno 2027 è festivo?». L'utente scrive in
+linguaggio naturale; il modello chiama lo strumento e risponde con una frase che contiene il
+risultato.
+
+Il valore didattico è:
+1. **formati**: lo strumento accetta e restituisce solo date ISO (`AAAA-MM-GG`); è il modello a
+   convertire «15/03/2024» o «15 marzo 2024», e un formato sbagliato viene rifiutato in modo
+   esplicito;
+2. **casi limite**: fine mese, anni bisestili, scadenze che cadono di sabato, domenica o in un
+   giorno festivo, date impossibili, anni non coperti dal file delle festività;
+3. **risultato non normativo**: le scadenze sono indicative e non hanno valore legale, e la
+   risposta lo dice.
+
+### 15.2 Domande da supportare (decise dall'utente: tutti e quattro i gruppi)
+
+**A. Scadenza da una data e una durata**
+1. «Ho firmato l'affitto il 15/03/2024, dura 4 anni: quando scade?»
+2. «Ho ricevuto la fattura il 10 ottobre, va pagata a 30 giorni: entro quando?»
+3. «Il preavviso è di 6 mesi rispetto al 31/12/2026: entro che giorno devo disdire?»
+   (conto **all'indietro**)
+3b. «La fattura del 2026-11-09 va pagata entro 10 giorni lavorativi: entro quando?» — una
+   scadenza espressa in giorni lavorativi è del **gruppo A** (deciso dall'utente dopo la
+   revisione): vale la nota non normativa.
+
+**B. Giorni lavorativi**
+4. «Che giorno sarà fra 10 giorni lavorativi a partire da oggi?»
+5. «Quanti giorni lavorativi ci sono tra il 1° e il 30 novembre?»
+
+**C. Differenza tra date**
+6. «Quanti giorni mancano al 25/12/2026?»
+7. «Quanti giorni sono passati dal 1° gennaio al 9 novembre?»
+
+**D. Informazioni su una data**
+8. «Il 2 giugno 2027 è festivo?»
+9. «Che giorno della settimana è il 15/03/2028?»
+10. «Quali sono le festività di dicembre 2026?»
+
+### 15.3 Regole del calendario
+
+**Giorni non lavorativi** (deciso dall'utente): sabato, domenica e le festività del file locale.
+
+**Spostamento della scadenza** (deciso dall'utente), solo per il gruppo A:
+- conto **in avanti**: se la data calcolata cade in un giorno non lavorativo, si sposta al
+  **primo giorno lavorativo successivo**;
+- conto **all'indietro** (es. preavviso): si sposta al **giorno lavorativo precedente**, per non
+  far scadere il termine in ritardo.
+
+Quando c'è uno spostamento, la risposta indica **la data calcolata, il motivo e la data finale**
+(deciso dall'utente), es.: «la data calcolata 2028-03-12 cade di domenica: la scadenza si sposta
+al 2028-03-13». Il motivo nomina la festività quando è quella la causa («è il 25 aprile, Festa
+della Liberazione»).
+
+*Scelte mie (confermate dall'utente nel riepilogo):*
+- I gruppi B, C e D non spostano nulla: restituiscono la data così com'è.
+- **Durate del gruppo A** in giorni, giorni lavorativi, settimane, mesi o anni. I «giorni» sono
+  **di calendario** («a 30 giorni» = 30 giorni di calendario, poi l'eventuale spostamento); la
+  settimana vale 7 giorni; i «giorni lavorativi» si contano come nel gruppo B (partenza esclusa),
+  quindi il risultato è già lavorativo e non serve spostamento.
+- **Fine mese**: se il giorno non esiste nel mese di arrivo si prende l'ultimo giorno del mese:
+  2025-01-31 + 1 mese = 2025-02-28; 2024-01-31 + 1 mese = 2024-02-29; 2024-02-29 + 1 anno =
+  2025-02-28; 2024-02-29 + 4 anni = 2028-02-29. Lo stesso vale all'indietro
+  (2026-03-31 − 1 mese = 2026-02-28).
+- **«Fra N giorni lavorativi»** (gruppo B): la data di partenza non si conta; si avanza di N
+  giorni lavorativi. Da venerdì 2026-11-06, 1 giorno lavorativo = lunedì 2026-11-09. Anche
+  all'indietro («10 giorni lavorativi prima del…»), per simmetria con il gruppo A.
+- **Giorni lavorativi tra due date** (gruppo B): si contano **entrambi gli estremi**, se
+  lavorativi. Dal 2026-11-02 (lunedì) al 2026-11-06 (venerdì) = 5.
+- **Differenza tra date** (gruppo C, *scelta mia dopo la revisione*): semplice differenza di
+  calendario (dal 2026-11-09 al 2026-11-10 = 1). Lo strumento non sa quale data è oggi, quindi
+  risponde in modo **neutro**, con le parole «dopo» / «prima» / «stesso giorno» invece di un numero
+  negativo: «il 2026-12-25 viene 46 giorni dopo il 2026-11-09»; «il 2026-01-01 viene 312 giorni
+  prima del 2026-11-09»; «le due date coincidono». È il modello, che sa quale data viene
+  dall'orologio, a dire «mancano 46 giorni» o «sono passati 312 giorni».
+- Le **quantità** (N giorni, mesi, anni) sono numeri interi da 1 in su; zero, negativi e decimali
+  sono rifiutati (la direzione si esprime con un parametro, non con il segno).
+
+### 15.4 Festività (decise dall'utente)
+
+**Festività nazionali italiane**, da un **file locale** con le **date esplicite anno per anno**
+dal **2020 al 2040** (deciso dall'utente). Ogni anno contiene:
+
+| Data | Festività |
+|---|---|
+| 01-01 | Capodanno |
+| 01-06 | Epifania |
+| variabile | Lunedì dell'Angelo (Pasquetta) |
+| 04-25 | Festa della Liberazione |
+| 05-01 | Festa del Lavoro |
+| 06-02 | Festa della Repubblica |
+| 08-15 | Assunzione (Ferragosto) |
+| 10-04 | San Francesco d'Assisi — **solo dal 2026** |
+| 11-01 | Ognissanti |
+| 12-08 | Immacolata Concezione |
+| 12-25 | Natale |
+| 12-26 | Santo Stefano |
+
+Il 4 ottobre è festa nazionale dal 1° gennaio 2026 (legge 8 ottobre 2025, n. 151, verificata
+il 2026-11-09). La domenica di Pasqua non si elenca: è comunque domenica. Le feste patronali
+locali non ci sono (non sono nazionali).
+
+*Scelte mie:*
+- Il file è **dati, non codice**: `lezione_4/festivita.json` accanto al server, con un elenco
+  per anno di coppie data ISO + nome in italiano. Il server non calcola la Pasqua: legge il file.
+- Le date di Pasquetta nel file si ricavano una volta, alla costruzione; un test le confronta
+  con un algoritmo di calcolo della Pasqua scritto **solo nel test**, così un errore di
+  trascrizione viene scoperto.
+- Il file viene letto e controllato all'avvio del server (anni 2020–2040 tutti presenti, date
+  valide e dell'anno giusto, 11 festività per anno fino al 2025 e 12 dal 2026). Se manca o è
+  rovinato il server non parte e l'intestazione della chat lo segnala come «non disponibile»,
+  come per gli altri server.
+
+**Intervallo coperto**: dal 2020-01-01 al 2040-12-31. Ogni data che lo strumento riceve, calcola
+o restituisce (compresa la data spostata) deve stare in questo intervallo; altrimenti il calcolo
+è **rifiutato** con un messaggio che dice qual è l'intervallo coperto. Mai un risultato fuori
+intervallo calcolato ignorando le festività.
+
+### 15.5 Formato delle date (deciso dall'utente)
+
+- **ISO `AAAA-MM-GG`** sia tra modello e strumento, sia **nella risposta all'utente** quando la
+  risposta usa gli strumenti delle scadenze (l'utente leggerà `2028-03-15`, non `15/03/2028`).
+- **L'orologio resta com'è** (deciso dall'utente dopo la revisione): a «che giorno è oggi?» la
+  risposta continua a essere nella forma attuale («lunedì 9 novembre 2026»). La regola ISO del
+  prompt va scritta in modo da valere solo per le risposte delle scadenze; anche quando l'orologio
+  serve solo a ricavare «oggi» per una scadenza, le date nella risposta sono in ISO.
+- Lo strumento accetta **solo** date ISO scritte per intero (`2024-03-15`, non `2024-3-15` né
+  `15/03/2024`); un formato diverso è rifiutato con un messaggio che mostra il formato atteso,
+  così il modello può correggersi e riprovare.
+- *Scelta mia:* accanto alla data, lo strumento indica il giorno della settimana in italiano
+  (`2028-03-15 (mercoledì)`), utile per le domande del gruppo D e per spiegare gli spostamenti.
+
+### 15.6 «Oggi» (deciso dall'utente)
+
+Lo strumento **non conosce la data di oggi**. Quando la domanda parte da oggi («quanti giorni
+mancano al…», «fra 10 giorni lavorativi»), il modello chiama **prima l'orologio**
+(`get_current_time`, *scelta mia:* fuso `Europe/Rome` se l'utente non ne indica un altro), poi
+passa la data allo strumento delle scadenze. È una **catena di due strumenti** nella stessa
+domanda e va misurata a parte. Vantaggio: lo strumento è deterministico e facile da testare.
+
+### 15.7 Nota non normativa (deciso dall'utente)
+
+La nota «calcolo indicativo, non ha valore legale» compare:
+- **solo per le scadenze del gruppo A**;
+- **solo la prima volta** nella chat: la prima risposta del modello che contiene una scadenza la
+  riporta; le scadenze successive nella stessa sessione no.
+
+**Chi decide** (deciso dall'utente dopo la revisione): **l'assistente**, non il server. La nota
+conta come «data» solo quando è **davvero arrivata all'utente**; se il turno fallisce (errore del
+modello, limite di passaggi) o il modello si dimentica di riportarla, alla scadenza successiva
+ricompare.
+
+*Scelte mie sul come:*
+- Il server è **senza stato**: ogni risultato riuscito del gruppo A contiene la nota, su una riga
+  riconoscibile (es. una riga che inizia con `Nota:`).
+- La sessione dell'assistente (`Sessione` in `sessione.py`) tiene un'indicazione «nota già data».
+  Quando è vera, la riga della nota viene **tolta** dal risultato di `compute_deadline` prima che
+  arrivi al modello; così il modello non la vede e non la ripete.
+- Alla fine di un turno riuscito, se la risposta mostrata all'utente contiene la nota (il
+  controllo cerca una frase fissa, es. «non ha valore legale», che il prompt chiede di riportare
+  così com'è), l'indicazione diventa vera. Se la risposta non la contiene, resta falsa.
+- **Nota garantita dal codice** (deciso dall'utente il 2026-11-09, dopo le misure): con Qwen 3.5 9B
+  il modello riportava la nota solo in 0–2 scadenze su 5. Per questo, se nel turno riuscito un
+  risultato di `compute_deadline` contiene la riga della nota e la risposta del modello no, la
+  sessione **aggiunge in fondo alla risposta** la riga `Nota: calcolo indicativo, non ha valore
+  legale.` prima di mostrarla e di salvarla in cronologia; da quel momento la nota è «data». Le
+  chiamate agli strumenti restano invece decise dal modello (nessun cambiamento al §15.10).
+- Un errore dello strumento non contiene la nota e non cambia nulla.
+- Dove togliere la riga (nel registro degli strumenti, nell'adattatore di `ClientMCP` o nella
+  sessione) è lasciato al costruttore, purché lo stato appartenga alla sessione e sia testabile
+  con il modello finto.
+
+### 15.8 Rifiuti espliciti
+
+Come per la calcolatrice: ogni rifiuto è un testo che inizia con `Errore:` e un messaggio chiaro in
+italiano, marcato come errore MCP e registrato a WARNING; nessun rifiuto fa cadere il server o la
+chat. Dopo un errore il modello spiega e **si ferma** (regola già in vigore, `0d73750`), senza
+proporre una data calcolata a mente.
+
+*Scelte mie (l'elenco minimo; il testo esatto al costruttore):*
+1. **Formato non ISO**: `15/03/2024`, `2024-3-15`, `15 marzo 2024` → «data '…' non valida: usa il
+   formato AAAA-MM-GG, es. 2024-03-15».
+2. **Data impossibile**: `2026-02-30`, `2025-02-29`, `2026-13-01` → «la data '…' non esiste».
+3. **Fuori intervallo**: una data in ingresso, un risultato o una data spostata fuori da
+   2020-01-01 … 2040-12-31 → «posso calcolare solo date tra il 2020-01-01 e il 2040-12-31».
+4. **Quantità non valida**: zero, negativa, decimale o non numerica.
+5. **Unità o direzione fuori elenco** (validazione Pydantic con elenco chiuso, come il
+   convertitore).
+6. **Intervallo rovesciato** nel conteggio dei giorni lavorativi (fine prima dell'inizio) →
+   rifiuto esplicito, non uno scambio silenzioso.
+7. **Mese o anno non valido** nell'elenco delle festività (`mese 13`, anno 2041).
+
+### 15.9 Come si costruisce
+
+Struttura analoga a convertitore e calcolatrice, per confrontarli a lezione:
+
+- **Server**: `lezione_4/scadenze.py`, avviabile da solo, libreria `mcp` già presente (2.3.0),
+  trasporto **stdio**, dati in `lezione_4/festivita.json`.
+- **Strumenti** (*scelta mia, da confermare con le misure*): **pochi strumenti piccoli, uno per
+  tipo di domanda**, invece di uno solo pieno di opzioni; con un modello da 9B gli strumenti
+  semplici sono scelti meglio. Proposta (nomi e descrizioni in inglese come gli altri):
+  - `compute_deadline(start_date, amount, unit, direction)` — gruppo A (scadenze e termini,
+    anche in giorni lavorativi), con spostamento e nota;
+  - `add_business_days(start_date, days, direction)` — gruppo B, «che giorno sarà fra N giorni
+    lavorativi» quando **non** si parla di una scadenza (senza nota). Fa lo stesso conto di
+    `compute_deadline` con i giorni lavorativi: la differenza è solo la nota, e le descrizioni
+    degli strumenti devono rendere chiara la scelta (scadenza/termine → `compute_deadline`);
+  - `count_business_days(start_date, end_date)` — gruppo B, conteggio;
+  - `days_between(from_date, to_date)` — gruppo C;
+  - `date_info(date)` — gruppo D: giorno della settimana, festività, lavorativo o no;
+  - `list_holidays(year, month)` — gruppo D, `month` facoltativo.
+  `unit` ∈ {giorni, giorni lavorativi, settimane, mesi, anni} (*nomi esatti dei valori al
+  costruttore*),
+  `direction` ∈ {avanti, indietro}, predefinita avanti. Se le misure mostrano confusione tra
+  strumenti, il costruttore può raggrupparli, riportandolo.
+- **Logica separata dal protocollo**: calcolo delle date, festività e messaggi in funzioni Python
+  pure (`datetime.date` della libreria standard), testabili senza MCP; lo strato MCP è sottile.
+- **Lato assistente**: un terzo `ClientMCP` con `parametri_scadenze()` e `collega_scadenze()`;
+  i tre server restano **indipendenti** (se uno non parte, gli altri funzionano); riga
+  «Giorni e scadenze (MCP): attivo / non disponibile» nell'intestazione. `ClientMCP` espone già
+  tutti gli strumenti di un server (`list_tools`), quindi i sei strumenti arrivano senza modifiche
+  al ponte. La gestione della nota (§15.7) è l'unica logica nuova lato assistente.
+- **Grafo e registro** non cambiano struttura.
+- **Cronologia** (*scelta mia*): le chiamate agli strumenti delle scadenze restano nella
+  cronologia della sessione, come `convert_units` e `calculate`; l'orologio resta escluso come
+  oggi (l'ora non va riusata).
+- **Docker**: il `Dockerfile` copia anche `scadenze.py` e `festivita.json`.
+- **Nessuna dipendenza nuova.**
+
+### 15.10 Prompt di sistema (deciso dall'utente: sempre lo strumento)
+
+Come per gli altri strumenti: il modello usa **sempre** gli strumenti delle scadenze per ogni
+domanda su date, scadenze, giorni lavorativi, festività e giorni della settimana, **mai a mente**,
+anche quando la risposta sembra ovvia. Non si forza dal codice; si rafforza il prompt e si misura.
+Il prompt dice anche: convertire le date dell'utente in ISO prima della chiamata; chiedere prima
+l'orologio quando serve oggi; scrivere le date in ISO nelle risposte delle scadenze (non in quelle
+del solo orologio); usare `compute_deadline` per scadenze e termini e `add_business_days` solo per
+«che giorno sarà»; trasformare il risultato neutro di `days_between` in «mancano / sono passati»;
+riportare data calcolata, motivo e data finale quando c'è uno spostamento; riportare la nota
+non normativa **così com'è** quando è nel risultato; dopo un errore spiegare e fermarsi. Lezione dalla calcolatrice: non descrivere nel
+prompt ciò che lo strumento **non** sa fare (fa rispondere senza strumento). Testo preciso al
+costruttore, da affinare con le misure.
+
+### 15.11 Test e verifiche
+
+- **Test automatici senza modello**: ogni domanda del §15.2 con data fissa; spostamenti in avanti
+  e all'indietro (sabato, domenica, festività, ponti di più giorni come 2026-12-25/26 + weekend);
+  fine mese e bisestili del §15.3; scadenze in giorni lavorativi; conteggi agli estremi;
+  differenza neutra («dopo» / «prima» / «coincidono»); festività del file (12 per anno dal 2026,
+  11 prima; 4 ottobre assente nel 2025, presente nel 2026; Pasquetta controllata con l'algoritmo
+  del test); **ogni rifiuto** del §15.8; nota (con il modello finto): presente alla prima
+  scadenza, tolta dalla seconda dopo che è arrivata all'utente, **di nuovo presente** se il
+  turno precedente è fallito o la risposta non la conteneva, mai nel gruppo B;
+  server MCP in-process e via stdio con **tutti** gli strumenti elencati; collegamento
+  nell'assistente (tre server indipendenti, intestazione).
+- **Prove reali con LM Studio** (`RUN_REAL_TESTS=1`): una scadenza del gruppo A con spostamento
+  (data calcolata, motivo e data finale nella risposta, in ISO, con la nota); una domanda che parte
+  da oggi (orologio **e** scadenze chiamati); un formato non ISO dell'utente convertito dal
+  modello; un rifiuto (anno 2045) senza data inventata.
+- **Misure** (stesso metodo della calcolatrice): domande dei quattro gruppi in sessione nuova,
+  sessione lunga mista, catena orologio → scadenze, date scritte in formati diversi, nota solo
+  alla prima scadenza, scelta tra `compute_deadline` e `add_business_days`; contando le chiamate
+  reali agli strumenti. **Regressione** su orologio (che deve continuare a rispondere nella forma
+  attuale, non in ISO), convertitore e calcolatrice dopo il cambio di prompt, con confronto
+  prima/dopo. Numeri all'utente
+  e nel README; nessuna soglia bloccante, si ritocca il prompt per alcuni giri.
+- **Prova Docker**: «Giorni e scadenze (MCP): attivo» nel container.
+
+### 15.12 Obiettivi
+
+- Server MCP separato per date e scadenze, con festività italiane 2020–2040 da file locale.
+- Domande dei gruppi A–D, con spostamento della scadenza nei giorni non lavorativi.
+- Date ISO ovunque, rifiuti espliciti per formati e casi limite.
+- Nota non normativa alla prima scadenza della chat.
+- L'assistente usa gli strumenti tramite MCP, anche in Docker, con un tasso misurato.
+
+### 15.13 Non-obiettivi
+
+- Festività regionali o patronali, altri paesi, anni fuori 2020–2040.
+- Calcolo della Pasqua nel server; scaricare festività da Internet.
+- Termini legali veri (sospensione feriale dei termini, regole del codice civile sul computo dei
+  termini, ecc.): il risultato resta indicativo.
+- Orari e fusi nelle scadenze (si lavora a giorni interi).
+- Riconoscere date in linguaggio naturale nello strumento (lo fa il modello).
+- Forzare dal codice la chiamata agli strumenti.
+
+### 15.14 Anti-obiettivi (sarebbe un fallimento anche se «funziona»)
+
+- Il modello che calcola date o giorni a mente, o che indovina la data di oggi senza l'orologio.
+- Una scadenza spostata senza dire la data calcolata e il motivo.
+- Una data fuori intervallo calcolata ignorando le festività invece di rifiutarla.
+- Un formato non ISO accettato e interpretato in silenzio (03/04 è ambiguo).
+- Festività scritte nel codice invece che nel file.
+- Il preavviso spostato in avanti (oltre il termine).
+- Una scadenza presentata come certa, senza la nota la prima volta.
+- La nota considerata «data» anche se all'utente non è mai arrivata.
+- L'orologio che cambia formato di risposta per colpa della regola ISO.
+
+### 15.15 Vincoli di lavoro
+
+- Solo in `lezione_4/`, sul branch `feature/nuove-funzionalita`.
+- **Commit e push solo su richiesta esplicita dell'utente.**
+- Aggiornare `CLAUDE.md` e `README.md` (struttura, avvio, test, limiti misurati).
+- Comandi documentati per PowerShell.
+
+### 15.16 Lasciato al costruttore
+
+- Nomi interni delle funzioni, struttura del modulo, forma esatta di `festivita.json`.
+- Testo esatto dei risultati e dei messaggi di errore (italiano, chiaro, date ISO).
+- Nomi esatti dei valori di `unit` e `direction`; eventuale raggruppamento degli strumenti se le
+  misure lo suggeriscono.
+- Testo del prompt e delle descrizioni degli strumenti, da affinare con le misure.
+- Dove togliere la riga della nota e quale frase fissa usare per riconoscerla (§15.7).

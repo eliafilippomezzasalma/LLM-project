@@ -175,32 +175,53 @@ def test_collega_calcolatrice_riuscita():
         remoto.chiudi()
 
 
+def test_collega_scadenze_fallito(caplog):
+    from mcp import StdioServerParameters
+
+    parametri = StdioServerParameters(command=sys.executable, args=["-c", "import sys; sys.exit(1)"])
+    with caplog.at_level("WARNING"):
+        assert terminale.collega_scadenze(parametri) is None
+    assert "scadenze MCP non disponibile" in caplog.text
+
+
+def test_collega_scadenze_riuscito():
+    remoto = terminale.collega_scadenze()
+    try:
+        assert "compute_deadline" in [s.name for s in remoto.strumenti()]
+    finally:
+        remoto.chiudi()
+
+
 def test_intestazione_server_mcp():
     config = SimpleNamespace(lm_model="m", lm_base_url=URL)
-    solo_conv = terminale.intestazione(config, True, False)
-    assert "Convertitore di unità (MCP): attivo" in solo_conv
-    assert "Calcolatrice (MCP): non disponibile" in solo_conv
-    solo_calc = terminale.intestazione(config, False, True)
-    assert "Convertitore di unità (MCP): non disponibile" in solo_calc
-    assert "Calcolatrice (MCP): attivo" in solo_calc
+    testo = terminale.intestazione(config, True, False, True)
+    assert "Convertitore di unità (MCP): attivo" in testo
+    assert "Calcolatrice (MCP): non disponibile" in testo
+    assert "Giorni e scadenze (MCP): attivo" in testo
+    altro = terminale.intestazione(config, False, True, False)
+    assert "Convertitore di unità (MCP): non disponibile" in altro
+    assert "Calcolatrice (MCP): attivo" in altro
+    assert "Giorni e scadenze (MCP): non disponibile" in altro
 
 
-def test_main_server_indipendenti_e_chiusi(monkeypatch):
-    class RemotoFinto:
-        chiuso = False
+class RemotoFinto:
+    def __init__(self, *strumenti):
+        self._strumenti = list(strumenti)
+        self.chiuso = False
 
-        def strumenti(self):
-            return [SENTINELLA]
+    def strumenti(self):
+        return self._strumenti
 
-        def chiudi(self):
-            self.chiuso = True
+    def chiudi(self):
+        self.chiuso = True
 
-    SENTINELLA = SimpleNamespace(name="calculate")
-    finto = RemotoFinto()
+
+def _prepara_main(monkeypatch, convertitore, calcolatrice, scadenze):
     visto = {}
 
     def chat(sessione, intestazione, indirizzo, **_):
         visto["intestazione"] = intestazione
+        visto["sessione"] = sessione
 
     config = SimpleNamespace(lm_model="m", lm_base_url=URL, log_level="WARNING", max_tool_steps=3)
     monkeypatch.setattr(terminale, "carica_config", lambda: config)
@@ -209,10 +230,34 @@ def test_main_server_indipendenti_e_chiusi(monkeypatch):
                         lambda config, strumenti: visto.update(strumenti=strumenti) or object())
     monkeypatch.setattr(terminale, "costruisci_grafo", lambda *a, **k: object())
     monkeypatch.setattr(terminale, "esegui_chat", chat)
-    monkeypatch.setattr(terminale, "collega_convertitore", lambda: None)
-    monkeypatch.setattr(terminale, "collega_calcolatrice", lambda: finto)
+    monkeypatch.setattr(terminale, "collega_convertitore", lambda: convertitore)
+    monkeypatch.setattr(terminale, "collega_calcolatrice", lambda: calcolatrice)
+    monkeypatch.setattr(terminale, "collega_scadenze", lambda: scadenze)
+    return visto
+
+
+def test_main_server_indipendenti_e_chiusi(monkeypatch):
+    sentinella = SimpleNamespace(name="calculate")
+    calc, scad = RemotoFinto(sentinella), RemotoFinto()
+    visto = _prepara_main(monkeypatch, None, calc, scad)
     assert terminale.main() == 0
     assert "Convertitore di unità (MCP): non disponibile" in visto["intestazione"]
     assert "Calcolatrice (MCP): attivo" in visto["intestazione"]
-    assert finto.chiuso
-    assert SENTINELLA in visto["strumenti"]
+    assert "Giorni e scadenze (MCP): attivo" in visto["intestazione"]
+    assert calc.chiuso and scad.chiuso
+    assert sentinella in visto["strumenti"]
+
+
+def test_main_avvolge_compute_deadline(monkeypatch):
+    from langchain_core.tools import StructuredTool
+
+    originale = StructuredTool.from_function(
+        lambda giorni: "Scadenza: 2026-01-02.", name="compute_deadline", description="finto"
+    )
+    scad = RemotoFinto(originale)
+    visto = _prepara_main(monkeypatch, None, None, scad)
+    assert terminale.main() == 0
+    (passato,) = [s for s in visto["strumenti"] if s.name == "compute_deadline"]
+    assert passato is not originale
+    assert visto["sessione"].nota is not None
+    assert scad.chiuso

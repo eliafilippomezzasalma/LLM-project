@@ -9,7 +9,10 @@ La cartella del progetto è `lezione_4/`. Specifica in `specs.md`, piano in
 - `assistente/`: `config` (variabili d'ambiente), `log` (stderr), `orologio` (strumento),
   `strumenti` (esecuzione delle chiamate), `modello` (client LM Studio), `grafo` (LangGraph),
   `sessione` (cronologia e prompt di sistema), `terminale` (chat, `python -m assistente`),
-  `mcp_remoto` (ponte sincrono verso server MCP via stdio).
+  `mcp_remoto` (ponte sincrono verso server MCP via stdio), `nota` (nota non normativa dei risultati di
+  `compute_deadline`, data una sola volta per chat).
+- `scadenze.py` + `festivita.json`: server MCP di giorni e scadenze (sei strumenti, festività solo dal file);
+  specifica in `specs.md` §15.
 - `calcolatrice.py`: server MCP della calcolatrice sicura (strumento `calculate`, senza `eval`);
   specifica in `specs.md` §14, piano in `docs/superpowers/plans/` (2026-11-03).
 - `convertitore.py`: server MCP del convertitore di unità (strumento `convert_units`);
@@ -35,6 +38,8 @@ Un'applicazione da terminale in Python che conversa con un modello locale e:
   con unità come elenco chiuso nello schema e validazione Pydantic con errori in italiano;
 - offre una calcolatrice sicura tramite un secondo server MCP (`calcolatrice.py`, stdio): espressioni
   aritmetiche senza `eval`, con rifiuti espliciti in italiano;
+- offre giorni e scadenze tramite un terzo server MCP (`scadenze.py`, stdio): scadenze, giorni lavorativi,
+  differenze tra date, festività italiane da `festivita.json`, date solo `AAAA-MM-GG`, con rifiuti in italiano;
 - si avvia anche con Docker Compose.
 
 ## Confini

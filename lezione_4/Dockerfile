@@ -13,6 +13,8 @@ RUN pip install -r requirements.txt
 COPY assistente/ assistente/
 COPY convertitore.py .
 COPY calcolatrice.py .
+COPY scadenze.py .
+COPY festivita.json .
 
 RUN useradd --create-home app
 USER app

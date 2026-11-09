@@ -7,8 +7,10 @@ strumento **`get_current_time`**, che richiede sempre un fuso orario IANA (es. `
 Può anche convertire unità di misura con lo strumento **`convert_units`**, offerto da un server
 **MCP** separato (`convertitore.py`) che l'assistente avvia da solo all'avvio.
 Per i conti usa la **calcolatrice sicura** `calculate` (`calcolatrice.py`, un secondo server MCP, senza `eval`).
+Per date e scadenze usa i **sei strumenti dei giorni e delle scadenze** (`scadenze.py`, un terzo server MCP, con le festività italiane in `festivita.json`).
 
 Specifica: [`specs.md`](specs.md) · Piano: [`implementation_plan.md`](implementation_plan.md)
+· Giorni e scadenze: specifica in [`specs.md`](specs.md) §15
 · Calcolatrice: specifica in [`specs.md`](specs.md) §14, [piano](docs/superpowers/plans/2026-11-03-calcolatrice-mcp.md)
 · Convertitore: [specifica](docs/superpowers/specs/2026-11-02-convertitore-mcp-design.md),
 [piano](docs/superpowers/plans/2026-11-02-convertitore-mcp.md)
@@ -28,6 +30,9 @@ assistente/
   mcp_remoto.py ponte sincrono verso un server MCP avviato via stdio
 convertitore.py server MCP del convertitore di unità (python convertitore.py)
 calcolatrice.py server MCP della calcolatrice sicura (python calcolatrice.py)
+scadenze.py     server MCP di giorni e scadenze (python scadenze.py), legge festivita.json
+festivita.json  festività italiane 2020–2040 (le uniche date di festività del progetto)
+assistente/nota.py  nota «calcolo indicativo» da dare una sola volta per chat
 tests/          test automatici (senza modello) e prova reale (test_reale.py)
 ```
 
@@ -166,6 +171,83 @@ la calcolatrice non supporta: con quella descrizione il modello rispondeva da so
 radice di 16 ×6, seno di 30 ×2, logaritmo di 1000 ×2 → strumento sempre chiamato e nessun risultato
 nella risposta (10/10); controlli `10 / 0`, `2^10`, `(3,5 + 2) * 4` corretti.
 
+### Giorni e scadenze (MCP)
+
+`scadenze.py` è il terzo server MCP lanciato all'avvio; come gli altri è indipendente e l'intestazione dice
+se è `attivo` o `non disponibile` (`Giorni e scadenze (MCP): ...`). Ha sei strumenti: `compute_deadline`,
+`add_business_days`, `count_business_days`, `days_between`, `date_info`, `list_holidays`. Non conosce la data di
+oggi (se serve, il modello la chiede prima a `get_current_time`) e non calcola la Pasqua: le festività sono
+solo quelle di `festivita.json` (12 per anno, il 4 ottobre solo dal 2026).
+
+Domande supportate (un esempio per gruppo):
+
+| Gruppo | Esempio |
+|---|---|
+| Scadenza da data e durata | «Ho firmato l'affitto il 15/03/2024, dura 4 anni: quando scade?» (anche all'indietro: «preavviso di 6 mesi rispetto al 31/12/2026») |
+| Giorni lavorativi | «Quanti giorni lavorativi ci sono tra il 1° e il 30 novembre?» |
+| Differenza tra date | «Quanti giorni mancano al 25/12/2026?» |
+| Informazioni su una data | «Il 2 giugno 2027 è festivo?», «Quali sono le festività di dicembre 2026?» |
+
+Regole. Non lavorativi: sabato, domenica e festività. Se una scadenza (gruppo A) cade in un giorno non
+lavorativo, in avanti si sposta al primo giorno lavorativo successivo, all'indietro (preavviso) al giorno
+lavorativo precedente; la risposta riporta data calcolata, motivo e data finale. I giorni sono di calendario,
+i mesi a fine mese si fermano all'ultimo giorno del mese. Intervallo coperto: dal 2020-01-01 al 2040-12-31.
+Le date si scrivono solo in formato ISO `AAAA-MM-GG` (le converte il modello) e nei risultati compare anche il giorno
+della settimana. La **nota** «calcolo indicativo, non ha valore legale.» accompagna la prima scadenza della chat:
+se il modello non la riporta, la sessione la aggiunge in fondo alla risposta; dalle scadenze successive viene tolta dai
+risultati. Se il turno fallisce (errore del modello, limite di passaggi) la nota non conta come data e ricompare.
+
+Rifiuta con un messaggio `Errore: ...` in italiano (nessuna data inventata):
+
+| Rifiuto | Esempio | Messaggio |
+|---|---|---|
+| formato non ISO | `15/03/2024` | `Errore: data '15/03/2024' non valida: usa il formato AAAA-MM-GG, es. 2024-03-15` |
+| data inesistente | `2026-02-30` | `Errore: la data '2026-02-30' non esiste` |
+| fuori intervallo | `2041-01-01` | `Errore: data 2041-01-01 fuori dall'intervallo coperto: posso calcolare solo date tra il 2020-01-01 e il 2040-12-31` |
+| quantità non valida | 0 giorni | `Errore: la quantità deve essere un numero intero da 1 in su` |
+| unità fuori elenco | `hours` | `Errore: unità non valida: usa days, business_days, weeks, months o years` |
+| direzione fuori elenco | `sideways` | `Errore: direzione non valida: usa forward o backward` |
+| intervallo rovesciato | fine prima dell'inizio | `Errore: la data finale 2026-11-01 viene prima di quella iniziale 2026-11-30` |
+| mese non valido | mese 13 | `Errore: mese non valido: usa un numero da 1 a 12` |
+| anno non valido | 2041 | `Errore: anno non valido: posso calcolare solo date tra il 2020-01-01 e il 2040-12-31` |
+
+Il server si può avviare anche da solo con `.\venv\Scripts\python.exe scadenze.py`: resta in attesa di messaggi
+MCP su stdin e termina quando l'input si chiude; se `festivita.json` manca o è rovinato esce con codice 1 e un
+messaggio `scadenze: ...` su stderr.
+
+Misure del 2026-11-09 (locale, Qwen 3.5 9B, prompt attuale):
+- **16 domande in sessione nuova** (i quattro gruppi, date scritte in formati diversi, 2045 e 30/02 da
+  rifiutare): strumento giusto **15/16** (una volta «che giorno della settimana è il 15/03/2028?» è stata
+  risolta a mente, con risposta giusta); risposta con **tutte** le date in ISO **11/16** (prima del ritocco
+  del prompt 3/16). Le date calcolate dallo strumento sono riportate in ISO; quelle che il modello riprende
+  dalla domanda («dal 1° gennaio 2026», «rispetto al 31/12/2026») restano a volte nel formato dell'utente.
+- **Catena orologio → scadenze** («quanti giorni mancano al 25/12/2026?», «che giorno sarà fra 10 giorni
+  lavorativi?» ×3): **6/6** con `get_current_time` e poi lo strumento giusto.
+- **Domande da oggi dopo una data citata** (prima «ho firmato l'affitto il 15/03/2024…», poi «mancano»,
+  «fra N giorni lavorativi», «sono passati dal…»). Prima del ritocco il modello prendeva la data dell'affitto
+  come oggi («mancano 1015 giorni» invece di 46) in 2 sessioni su 6. Dopo il ritocco (regola esplicita più esempi
+  di chiamata; 8 sessioni, metà con parole e date diverse dagli esempi): «mancano» **8/8** con l'orologio e
+  risposta giusta; «fra N giorni lavorativi» 7/8 con l'orologio, 8/8 giuste; «sono passati» solo **1/8** con
+  l'orologio, 7/8 giuste. Il modello riprende di solito il 2026-11-09 dalla propria chiamata precedente; una
+  volta si è inventato oggi = 2024-11-09 (62 giorni invece di 668). Un terzo giro (regola spostata accanto a
+  quella dell'orologio) non ha ridotto le risposte sbagliate (1 su 24 anche lì), ha reso le frasi meno pulite
+  e ha fatto saltare lo strumento per il 2045 in 2 prove su 6 (0 su 5 con il prompt attuale): è stato scartato.
+- **Regressione dopo il ritocco** (sessione nuova per ogni domanda): calcolatrice e convertitore **12/12** con lo
+  strumento (kg→m ×2, parsec, 10 km, `10 / 0` ×3, radice di 16 ×2, `2^10`, `(3,5 + 2) * 4`, litri→kg). Nella
+  prova guidata completa (15 domande di seguito) gli strumenti sono stati chiamati tutti in Docker. In locale
+  invece «5 kg in metri» e «10 / 0» sono stati rifiutati a mente, senza valori inventati ma scrivendo «lo
+  strumento indica…».
+- **Nota**: prima della correzione il modello la riportava solo in 0–2 scadenze su 5; ora, aggiunta dalla
+  sessione quando manca, compare alla prima scadenza e non alle due successive (2 sessioni su 2).
+- **Sessione lunga** di 20 domande miste (scadenze, calcoli, conversioni, orari, chiacchiere): **19/20** con lo
+  strumento giusto; l'eccezione è «Il 2045-01-01 che giorno è?», rifiutata a mente senza date inventate.
+- **Regressione** sugli altri strumenti: calcolatrice 6/6 (radice di 16 ×3, `10 / 0`, `2^10`, `(3,5 + 2) * 4`),
+  convertitore 8/9 (una volta «1 parsec in km» rifiutato a mente, senza numeri inventati).
+
+Il ritocco del prompt ha richiesto tre giri: un esempio di risposta già pronta («Sì, il 2027-06-02 è
+festivo…») faceva rispondere il modello **senza** strumento (12/16, una volta con una data sbagliata);
+nel prompt restano solo esempi di chiamata.
+
 ### Docker
 
 LM Studio resta sull'host; il container lo raggiunge su `http://host.docker.internal:1234/v1`
@@ -176,14 +258,14 @@ docker compose build
 docker compose run --rm assistente
 ```
 
-L'immagine contiene solo `assistente/`, `convertitore.py`, `calcolatrice.py` e `requirements.txt` e gira come utente non-root `app`;
+L'immagine contiene solo `assistente/`, `convertitore.py`, `calcolatrice.py`, `scadenze.py`, `festivita.json` e `requirements.txt` e gira come utente non-root `app`;
 il `.env` viene letto solo all'avvio. L'orario delle righe di log nel container è in UTC
 (l'ora restituita dallo strumento no: il fuso è sempre esplicito).
 
 ## Test
 
 Test automatici, senza modello (grafo, cronologia, instradamento, strumento con istante
-controllato, convertitore, calcolatrice e server MCP veri avviati via stdio):
+controllato, convertitore, calcolatrice, scadenze e server MCP veri avviati via stdio):
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q
@@ -214,12 +296,23 @@ Avviare la chat (locale o Docker) e scrivere:
 6. `Converti 5 kg in metri` → riga di log `WARNING` con l'errore; l'assistente spiega che non si può.
 7. `Quanto fa (3,5 + 2) * 4?` → riga di log con `calculate` e risposta 22.
 8. `Quanto fa 10 / 0?` → riga di log `WARNING` con `Errore: divisione per zero`; l'assistente lo spiega senza dare un numero.
-9. `esci` → `Ciao!`.
+9. `Ho firmato l'affitto il 15/03/2024, dura 4 anni: quando scade?` → riga di log con `compute_deadline`, data riportata in formato `AAAA-MM-GG` e la nota «calcolo indicativo, non ha valore legale.».
+10. `Quanti giorni mancano al 25/12/2026?` → prima `get_current_time` con `Europe/Rome`, poi `days_between`; risposta con «mancano».
+11. `Il 30/02/2026 è festivo?` → riga di log `WARNING` con `Errore: ...`; l'assistente spiega e non dà una data.
+12. una seconda scadenza nella stessa chat → senza nota.
+13. `esci` → `Ciao!`.
 
 Limite noto: al punto 3 il modello a volte non chiama lo strumento e calcola l'ora da quella di
 Tokyo, spesso sbagliando (misure del 2026-11-03: 17 chiamate su 24, sia con sia senza la parte del
 prompt sulla calcolatrice). La riga di log permette di
 accorgersene: senza riga, l'ora non viene dallo strumento.
+Anche alla domanda secca «Che giorno è oggi?» (o «Che data è oggi?») il modello spesso non chiama
+l'orologio e **inventa una data** (misure del 2026-11-09: 1 volta su 6 con lo strumento, uguale con il
+prompt precedente a «Giorni e scadenze», quindi non è una regressione). Quando la data di oggi serve a
+una scadenza, invece, il modello chiama l'orologio (6/6). Fa eccezione «quanti giorni sono passati dal…»
+dopo altre domande sulle date: il modello riusa spesso la data di oggi già presente in conversazione invece di
+richiederla (1/8 con l'orologio). Senza la riga di log `get_current_time` per quella domanda, la data di
+partenza non viene dallo strumento.
 
 Convertitore e cronologia: le chiamate a `convert_units` (con il loro risultato) restano nella
 cronologia della sessione, quelle all'orologio no. Senza questi esempi, dopo una dozzina di
@@ -248,5 +341,6 @@ averlo chiamato. La riga di log dice sempre se il risultato o l'errore viene dal
 | Risposte lente (15–60 s) | modello locale da 9B su CPU/GPU dell'host; la prima domanda carica il modello | normale; con `LOG_LEVEL=DEBUG` si vedono i messaggi inviati e la durata di ogni chiamata |
 | `Convertitore di unità (MCP): non disponibile` nell'intestazione | il server `convertitore.py` non è partito (dipendenza `mcp` mancante, file assente nell'immagine) | `pip install -r requirements.txt`; provare `python convertitore.py` per vedere l'errore; il motivo è anche nella riga di log `convertitore MCP non disponibile` |
 | `Calcolatrice (MCP): non disponibile` nell'intestazione | il server `calcolatrice.py` non è partito (dipendenza `mcp` mancante, file assente nell'immagine) | `pip install -r requirements.txt`; provare `python calcolatrice.py` per vedere l'errore; il motivo è anche nella riga di log `calcolatrice MCP non disponibile` |
-| `Errore: server MCP non raggiungibile` nel log | uno dei server (convertitore o calcolatrice) si è interrotto durante la chat | riavviare l'assistente (non c'è riavvio automatico) |
+| `Giorni e scadenze (MCP): non disponibile` nell'intestazione | il server `scadenze.py` non è partito: causa più probabile `festivita.json` mancante o rovinato (anche dipendenza `mcp` mancante o file assenti nell'immagine) | provare `python scadenze.py` per vedere il messaggio `scadenze: ...`; il motivo è anche nella riga di log `scadenze MCP non disponibile` |
+| `Errore: server MCP non raggiungibile` nel log | uno dei server (convertitore, calcolatrice o scadenze) si è interrotto durante la chat | riavviare l'assistente (non c'è riavvio automatico) |
 | `(nessuna risposta dal modello)` | il modello ha restituito un testo vuoto | riprovare; con `LOG_LEVEL=DEBUG` si vede l'esito di ogni chiamata (`chiamata -> risposta finale (7.6s)` o richiesta di strumento) |

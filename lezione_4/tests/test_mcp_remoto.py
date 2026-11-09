@@ -9,7 +9,7 @@ import pytest
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from mcp import StdioServerParameters
 
-from assistente.mcp_remoto import ClientMCP, ErroreMCP, parametri_calcolatrice, parametri_convertitore
+from assistente.mcp_remoto import ClientMCP, ErroreMCP, parametri_calcolatrice, parametri_convertitore, parametri_scadenze
 
 NON_RAGGIUNGIBILE = "Errore: server MCP non raggiungibile"
 
@@ -103,5 +103,19 @@ def test_apre_e_espone_calculate():
         assert strumento.name == "calculate"
         assert strumento.invoke({"expression": "2^10"}) == "2^10 = 1024"
         assert strumento.invoke({"expression": "10 / 0"}) == "Errore: divisione per zero"
+    finally:
+        client.chiudi()
+
+
+def test_apre_e_espone_le_scadenze():
+    client = ClientMCP.apri(parametri_scadenze())
+    try:
+        nomi = [s.name for s in client.strumenti()]
+        assert sorted(nomi) == sorted([
+            "compute_deadline", "add_business_days", "count_business_days",
+            "days_between", "date_info", "list_holidays",
+        ])
+        strumento = next(s for s in client.strumenti() if s.name == "date_info")
+        assert strumento.invoke({"date": "2027-06-02"}) == "2027-06-02 (mercoledì): festivo, Festa della Repubblica."
     finally:
         client.chiudi()

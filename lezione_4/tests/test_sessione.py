@@ -3,6 +3,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import StructuredTool
 
 from assistente.grafo import costruisci_grafo
+from assistente.nota import RIGA_NOTA, NotaNonNormativa, con_nota
 from assistente.orologio import crea_orologio
 from assistente.sessione import PROMPT_SISTEMA, LimitePassaggiRaggiunto, Sessione
 from assistente.strumenti import crea_registro
@@ -179,3 +180,99 @@ def test_cronologia_conserva_le_chiamate_alla_calcolatrice():
     assert tipi == [SystemMessage, HumanMessage, AIMessage, ToolMessage, AIMessage]
     assert [c["name"] for c in sessione.cronologia[2].tool_calls] == ["calculate"]
     assert sessione.cronologia[3].tool_call_id == "c1"
+
+
+def test_prompt_sistema_scadenze():
+    for parte in ("compute_deadline", "add_business_days", "AAAA-MM-GG", "get_current_time", "backward", "Nota:"):
+        assert parte in PROMPT_SISTEMA
+
+
+def test_prompt_oggi_sempre_dall_orologio():
+    # Misura del 2026-11-09: dopo «affitto firmato il 15/03/2024», «quanti giorni mancano al 25/12/2026?»
+    # usava 2024-03-15 come oggi (2 sessioni su 6). Le date delle domande precedenti non sono oggi.
+    assert "non sono la data di oggi" in PROMPT_SISTEMA
+    assert "«mancano»" in PROMPT_SISTEMA and "«fra N giorni»" in PROMPT_SISTEMA
+    assert "poi days_between con from_date" in PROMPT_SISTEMA  # esempio di chiamata, non di risposta
+
+
+def test_cronologia_conserva_le_chiamate_alle_scadenze():
+    scadenze = StructuredTool.from_function(
+        lambda giorni: "Scadenza: 2026-01-02.", name="compute_deadline", description="finto"
+    )
+    registro = crea_registro([crea_orologio(), scadenze])
+    modello = ModelloFinto([_chiede(("compute_deadline", {"giorni": 3}, "d1")), AIMessage("Scade il 2026-01-02.")])
+    sessione = Sessione(costruisci_grafo(modello, registro, max_passi=3))
+    assert sessione.chiedi("Quando scade?") == "Scade il 2026-01-02."
+    tipi = [type(m) for m in sessione.cronologia]
+    assert tipi == [SystemMessage, HumanMessage, AIMessage, ToolMessage, AIMessage]
+    assert [c["name"] for c in sessione.cronologia[2].tool_calls] == ["compute_deadline"]
+    assert sessione.cronologia[3].tool_call_id == "d1"
+
+
+def _scadenza_finta(giorni: int) -> str:
+    return "Scadenza: 2026-01-02.\nNota: calcolo indicativo, non ha valore legale."
+
+
+SCADENZA = ("compute_deadline", {"giorni": 3}, "d1")
+RISPOSTA_CON_NOTA = AIMessage("Scade il 2026-01-02. Nota: calcolo indicativo, non ha valore legale.")
+
+
+def _sessione_con_nota(risposte, max_passi=3):
+    nota = NotaNonNormativa()
+    strumento = StructuredTool.from_function(_scadenza_finta, name="compute_deadline", description="finto")
+    registro = crea_registro(con_nota([strumento], nota))
+    modello = ModelloFinto(risposte)
+    return Sessione(costruisci_grafo(modello, registro, max_passi=max_passi), nota), nota, modello
+
+
+def _tool_message_finale(modello):
+    return [m for m in modello.chiamate[-1] if isinstance(m, ToolMessage)][-1].content
+
+
+def test_nota_tolta_dopo_che_e_arrivata():
+    sessione, nota, modello = _sessione_con_nota(
+        [_chiede(SCADENZA), RISPOSTA_CON_NOTA, _chiede(SCADENZA), AIMessage("Di nuovo il 2026-01-02.")]
+    )
+    sessione.chiedi("Scadenza tra 3 giorni?")
+    assert nota.consegnata is True
+    assert "Nota:" in [m for m in modello.chiamate[1] if isinstance(m, ToolMessage)][-1].content
+    sessione.chiedi("E ancora?")
+    assert "Nota:" not in _tool_message_finale(modello)
+
+
+def test_nota_aggiunta_se_il_modello_la_omette():
+    sessione, nota, modello = _sessione_con_nota(
+        [_chiede(SCADENZA), AIMessage("Scade il 2026-01-02."), _chiede(SCADENZA), AIMessage("Ok.")]
+    )
+    testo = sessione.chiedi("Scadenza tra 3 giorni?")
+    assert testo.endswith(RIGA_NOTA)
+    assert nota.consegnata is True
+    assert RIGA_NOTA in sessione.cronologia[-1].content
+    assert sessione.chiedi("E ancora?") == "Ok."
+    assert "Nota:" not in _tool_message_finale(modello)
+
+
+def test_nota_non_duplicata():
+    sessione, _, _ = _sessione_con_nota([_chiede(SCADENZA), RISPOSTA_CON_NOTA])
+    testo = sessione.chiedi("Scadenza tra 3 giorni?")
+    assert testo == RISPOSTA_CON_NOTA.content
+    assert testo.count("non ha valore legale") == 1
+
+
+def test_nessuna_nota_senza_compute_deadline():
+    sessione, nota, _ = _sessione_con_nota([AIMessage("Ciao!")])
+    assert sessione.chiedi("Ciao") == "Ciao!"
+    assert nota.consegnata is False
+    altro = StructuredTool.from_function(lambda a: "info", name="date_info", description="finto")
+    nota2 = NotaNonNormativa()
+    modello = ModelloFinto([_chiede(("date_info", {"a": "x"}, "i1")), AIMessage("Info.")])
+    sessione2 = Sessione(costruisci_grafo(modello, crea_registro(con_nota([altro], nota2)), max_passi=3), nota2)
+    assert sessione2.chiedi("Info?") == "Info."
+    assert nota2.consegnata is False
+
+
+def test_nota_ripresentata_se_il_turno_fallisce():
+    sessione, nota, _ = _sessione_con_nota([_chiede(SCADENZA)])  # chiede sempre lo strumento
+    with pytest.raises(LimitePassaggiRaggiunto):
+        sessione.chiedi("Scadenza tra 3 giorni?")
+    assert nota.consegnata is False

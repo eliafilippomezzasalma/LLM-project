@@ -10,8 +10,15 @@ from mcp import StdioServerParameters
 from assistente.config import Config, ErroreConfigurazione, carica_config
 from assistente.grafo import costruisci_grafo
 from assistente.log import configura_log
-from assistente.mcp_remoto import ClientMCP, ErroreMCP, parametri_calcolatrice, parametri_convertitore
+from assistente.mcp_remoto import (
+    ClientMCP,
+    ErroreMCP,
+    parametri_calcolatrice,
+    parametri_convertitore,
+    parametri_scadenze,
+)
 from assistente.modello import crea_modello
+from assistente.nota import NotaNonNormativa, con_nota
 from assistente.orologio import crea_orologio
 from assistente.sessione import LimitePassaggiRaggiunto, Sessione
 from assistente.strumenti import crea_registro
@@ -79,13 +86,19 @@ def collega_calcolatrice(parametri: StdioServerParameters | None = None) -> Clie
     return _collega("calcolatrice", parametri or parametri_calcolatrice())
 
 
-def intestazione(config: Config, convertitore: bool, calcolatrice: bool) -> str:
-    """Le tre righe iniziali: modello e stato dei due server MCP."""
+def collega_scadenze(parametri: StdioServerParameters | None = None) -> ClientMCP | None:
+    """Avvia il server di giorni e scadenze (server MCP); None se non parte."""
+    return _collega("scadenze", parametri or parametri_scadenze())
+
+
+def intestazione(config: Config, convertitore: bool, calcolatrice: bool, scadenze: bool) -> str:
+    """Le quattro righe iniziali: modello e stato dei tre server MCP."""
     stato = {True: "attivo", False: "non disponibile"}
     return (
         f"Assistente del laboratorio — modello: {config.lm_model} @ {config.lm_base_url}\n"
         f"Convertitore di unità (MCP): {stato[convertitore]}\n"
-        f"Calcolatrice (MCP): {stato[calcolatrice]}"
+        f"Calcolatrice (MCP): {stato[calcolatrice]}\n"
+        f"Giorni e scadenze (MCP): {stato[scadenze]}"
     )
 
 
@@ -104,14 +117,15 @@ def main() -> int:
         print(f"Configurazione non valida: {errore}", file=sys.stderr)
         return 1
     configura_log(config.log_level)
-    convertitore, calcolatrice = collega_convertitore(), collega_calcolatrice()
-    remoti = [r for r in (convertitore, calcolatrice) if r]
+    convertitore, calcolatrice, scadenze = collega_convertitore(), collega_calcolatrice(), collega_scadenze()
+    remoti = [r for r in (convertitore, calcolatrice, scadenze) if r]
+    nota = NotaNonNormativa()
     try:
-        strumenti = [crea_orologio(), *(s for r in remoti for s in r.strumenti())]
+        strumenti = con_nota([crea_orologio(), *(s for r in remoti for s in r.strumenti())], nota)
         modello = crea_modello(config, strumenti)
         grafo = costruisci_grafo(modello, crea_registro(strumenti), config.max_tool_steps)
-        testo = intestazione(config, convertitore is not None, calcolatrice is not None)
-        esegui_chat(Sessione(grafo), testo, config.lm_base_url)
+        testo = intestazione(config, convertitore is not None, calcolatrice is not None, scadenze is not None)
+        esegui_chat(Sessione(grafo, nota), testo, config.lm_base_url)
     finally:
         for remoto in remoti:
             remoto.chiudi()

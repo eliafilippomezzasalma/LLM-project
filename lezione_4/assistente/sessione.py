@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from assistente.grafo import limite_raggiunto
 from assistente.modello import pulisci_ragionamento
+from assistente.nota import STRUMENTO_CON_NOTA, NotaNonNormativa
 
 PROMPT_SISTEMA = (
     "Sei l'assistente del laboratorio. Rispondi in italiano, in modo breve e chiaro. "
@@ -32,11 +33,52 @@ PROMPT_SISTEMA = (
     "anche se lo conosci. "
     "Anche per radici, seni, logaritmi o altre funzioni chiama comunque calculate con l'espressione "
     "richiesta: è lo strumento a dire che cosa è ammesso. Esempio: per «calcola la radice di 16» chiama "
-    "calculate con expression 'sqrt(16)' e, se risponde con un errore, spiegalo senza dire quanto vale."
+    "calculate con expression 'sqrt(16)' e, se risponde con un errore, spiegalo senza dire quanto vale. "
+    "Per ogni domanda su date, scadenze, giorni lavorativi, festività o giorni della settimana usa sempre "
+    "gli strumenti delle scadenze e non fare i conti a mente, anche quando la risposta sembra ovvia. "
+    "Questi strumenti accettano solo date nel formato AAAA-MM-GG: converti tu le date dell'utente "
+    "(per esempio «15/03/2024» o «15 marzo 2024» diventano '2024-03-15'). "
+    "Quando la domanda parte da oggi («mancano», «sono passati», «fra N giorni», «da oggi»), a ogni "
+    "domanda di questo tipo chiama prima get_current_time con il fuso 'Europe/Rome' e poi passa allo "
+    "strumento la data che restituisce. Le date citate nelle domande precedenti (per esempio la firma "
+    "di un affitto) non sono la data di oggi, e nemmeno quelle nei risultati precedenti: anche se la "
+    "data di oggi compare già nella conversazione, chiedila di nuovo a get_current_time. "
+    "Esempi: per «quanti giorni mancano al 25/12/2026?» chiama prima get_current_time con timezone "
+    "'Europe/Rome' e poi days_between con from_date uguale alla data restituita e to_date '2026-12-25'; "
+    "per «che giorno sarà fra 10 giorni lavorativi?» chiama prima get_current_time e poi add_business_days "
+    "con start_date uguale alla data restituita; per «quanti giorni sono passati dal 15/03/2024?» chiama "
+    "prima get_current_time e poi days_between con from_date '2024-03-15'. "
+    "Per scadenze e termini (affitti, fatture, preavvisi, anche in giorni lavorativi) usa compute_deadline; "
+    "per un preavviso usa direction 'backward'. "
+    "Usa add_business_days solo per sapere che giorno sarà fra N giorni lavorativi quando non si parla "
+    "di una scadenza. "
+    "days_between dice se una data viene prima o dopo l'altra: se una delle due è oggi, rispondi con "
+    "«mancano» o «sono passati». "
+    "Anche quando pensi che una data non esista o sia troppo lontana chiama comunque lo strumento, "
+    "per esempio per «il 30/02/2026 è festivo?» chiama date_info con date '2026-02-30': è lo strumento "
+    "a verificarlo. "
+    "Nelle risposte che usano questi strumenti scrivi ogni data solo nel formato AAAA-MM-GG, come nel "
+    "risultato dello strumento, anche quando ripeti le date della domanda: mai «30/06/2026», «30-06-2026», "
+    "«30.06.2026» o «30 giugno 2026». Esempio: per «il 2 giugno 2027 è festivo?» chiama date_info con "
+    "date '2027-06-02' e, dopo il risultato, nella risposta scrivi 2027-06-02, non «2 giugno 2027». "
+    "Questa regola non vale per le risposte che usano solo get_current_time. "
+    "Se la scadenza è stata spostata, riporta la data calcolata, il motivo e la data finale. "
+    "Se il risultato contiene una riga «Nota:», riportala così com'è nella risposta. "
+    "Se uno di questi strumenti restituisce un errore, spiega il motivo e fermati, senza calcolare "
+    "la data da solo."
 )
 # Strumenti le cui chiamate restano nella cronologia: sono esempi utili al modello per
 # continuare a usarli. Le chiamate all'orologio no: un orario vecchio non deve restare.
-STRUMENTI_IN_CRONOLOGIA = frozenset({"convert_units", "calculate"})
+STRUMENTI_IN_CRONOLOGIA = frozenset({
+    "convert_units",
+    "calculate",
+    "compute_deadline",
+    "add_business_days",
+    "count_business_days",
+    "days_between",
+    "date_info",
+    "list_holidays",
+})
 RISPOSTA_VUOTA = "(nessuna risposta dal modello)"
 
 
@@ -45,8 +87,9 @@ class LimitePassaggiRaggiunto(Exception):
 
 
 class Sessione:
-    def __init__(self, grafo):
+    def __init__(self, grafo, nota: NotaNonNormativa | None = None):
         self.grafo = grafo
+        self.nota = nota
         self.cronologia: list[BaseMessage] = [SystemMessage(PROMPT_SISTEMA)]
 
     def chiedi(self, domanda: str) -> str:
@@ -56,6 +99,14 @@ class Sessione:
         if limite_raggiunto(stato):
             raise LimitePassaggiRaggiunto()
         testo = pulisci_ragionamento(stato["messages"][-1].text) or RISPOSTA_VUOTA
+        if self.nota is not None:
+            risultati = [
+                str(m.content)
+                for m in stato["messages"][len(self.cronologia) + 1 :]
+                if isinstance(m, ToolMessage) and m.name == STRUMENTO_CON_NOTA
+            ]
+            testo = self.nota.completa(testo, risultati)
+            self.nota.registra_risposta(testo)
         passaggi = stato["messages"][len(self.cronologia) + 1 : -1]
         self.cronologia += [domanda_msg, *_chiamate_da_conservare(passaggi), AIMessage(testo)]
         return testo
