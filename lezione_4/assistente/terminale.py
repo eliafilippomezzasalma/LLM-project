@@ -20,6 +20,7 @@ from assistente.mcp_remoto import (
 from assistente.modello import crea_modello
 from assistente.nota import NotaNonNormativa, con_nota
 from assistente.orologio import crea_orologio
+from assistente.router import crea_router
 from assistente.sessione import LimitePassaggiRaggiunto, Sessione
 from assistente.strumenti import crea_registro
 
@@ -123,7 +124,14 @@ def main() -> int:
     try:
         strumenti = con_nota([crea_orologio(), *(s for r in remoti for s in r.strumenti())], nota)
         modello = crea_modello(config, strumenti)
-        grafo = costruisci_grafo(modello, crea_registro(strumenti), config.max_tool_steps)
+        grafo = costruisci_grafo(
+            modello,
+            crea_registro(strumenti),
+            config.max_tool_steps,
+            router=crea_router(config),
+            ambito=config.ambito_assistente,
+            messaggio_rifiuto=config.messaggio_rifiuto,
+        )
         testo = intestazione(config, convertitore is not None, calcolatrice is not None, scadenze is not None)
         esegui_chat(Sessione(grafo, nota), testo, config.lm_base_url)
     finally:

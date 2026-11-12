@@ -1,8 +1,8 @@
 # Assistente del laboratorio — lezione 4
 
 Chat da terminale in Python che conversa con un modello servito da **LM Studio** sul computer
-host. Il flusso è un grafo **LangGraph** esplicito (nodo `modello` → nodo `strumenti` → di
-nuovo `modello`), la cronologia dura quanto la sessione e il modello può chiedere l'ora con lo
+host. Il flusso è un grafo **LangGraph** esplicito (nodo `router` → nodo `agente` ⇄ nodo `strumenti`,
+oppure nodo `rifiuto`), la cronologia dura quanto la sessione e il modello può chiedere l'ora con lo
 strumento **`get_current_time`**, che richiede sempre un fuso orario IANA (es. `Asia/Tokyo`).
 Può anche convertire unità di misura con lo strumento **`convert_units`**, offerto da un server
 **MCP** separato (`convertitore.py`) che l'assistente avvia da solo all'avvio.
@@ -24,7 +24,8 @@ assistente/
   orologio.py   strumento get_current_time
   strumenti.py  esecuzione sicura delle chiamate agli strumenti
   modello.py    client verso LM Studio (API compatibile OpenAI)
-  grafo.py      grafo LangGraph modello ⇄ strumenti con limite di passaggi
+  router.py     router d'ambito: classifica ogni domanda (conversazione / fuori ambito)
+  grafo.py      grafo LangGraph router → agente ⇄ strumenti, oppure rifiuto, con limite di passaggi
   sessione.py   cronologia della sessione e prompt di sistema
   terminale.py  chat da terminale (python -m assistente)
   mcp_remoto.py ponte sincrono verso un server MCP avviato via stdio
@@ -60,8 +61,12 @@ Copy-Item .env.example .env
 |---|---|---|---|
 | `LM_BASE_URL` | sì | `http://localhost:1234/v1` | indirizzo dell'API di LM Studio, con `/v1` |
 | `LM_MODEL` | sì | `qwen/qwen3.5-9b` | identificativo restituito da `GET /v1/models` |
+| `AMBITO_ASSISTENTE` | sì | vedi `.env.example` | descrizione dell'ambito: il router decide se una domanda ne fa parte |
+| `MESSAGGIO_RIFIUTO` | sì | vedi `.env.example` | risposta fissa data alle domande fuori ambito (senza chiamare l'agente) |
 | `MAX_TOOL_STEPS` | no | `3` | passaggi modello → strumenti per ogni domanda |
 | `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO` o `WARNING` |
+
+Con Docker le due variabili nuove vanno nel `.env`, come le altre.
 
 Per vedere gli identificativi dei modelli disponibili:
 
@@ -87,6 +92,42 @@ allo strumento, per esempio:
 ```
 23:14:50 INFO strumenti: passo 1/3 get_current_time {"timezone": "Asia/Tokyo"} -> lunedì 2 novembre 2026, 07:14:50 — Asia/Tokyo (UTC+09:00)
 ```
+
+Il router scrive una riga per domanda, poi il nodo scelto; con `LOG_LEVEL=DEBUG` il nodo `agente`
+mostra anche i messaggi inviati e la durata di ogni chiamata:
+
+```
+INFO router: categoria=<categoria> motivo="<motivo>" -> agente
+INFO agente: chiamata <n>
+INFO router: categoria=<categoria> motivo="<motivo>" -> rifiuto
+INFO rifiuto: risposta fissa
+WARNING router: risposta non valida (...) -> agente
+```
+
+Se il router non risponde in modo valido, la domanda passa comunque all'agente (riga `WARNING`).
+
+### Misure del router
+
+Misure del 2026-11-12 con `qwen/qwen3.5-9b`, 24 domande per sessione: 14 in ambito o di
+conversazione (saluti, «cosa sai fare?», seguiti come «e a Sydney?», una domanda mista) e 10 fuori
+ambito (ricette e un loro seguito, politica, sport, codice, meteo, libri, barzellette, cultura generale).
+
+| Prompt del router | Prova | Corrette | In ambito rifiutate | Fuori ambito passate | Non valide |
+|---|---|---|---|---|---|
+| iniziale (categoria prima del motivo) | app, 3 sessioni | 63/72 | 0 | 9 | 0 |
+| definitivo (motivo prima della categoria) | solo router, 3 sessioni | 72/72 | 0 | 0 | 0 |
+| definitivo | app, 1 sessione | 24/24 | 0 | 0 | 0 |
+| definitivo | 20 domande diverse, solo router, 2 sessioni | 37/40 | 0 | 3 | 0 |
+
+- Nessuna domanda in ambito è mai stata rifiutata e l'agente non è mai partito dopo un rifiuto.
+- Limiti noti: «Quanto è alto il Monte Bianco?» passa all'agente (il router la scambia per una
+  conversione di unità) e a volte una richiesta di traduzione.
+- Il router aggiunge una chiamata al modello per ogni domanda: circa 17–22 s in mediana, fino a
+  75 s, con LM Studio sullo stesso computer. Il caso da 75 s era un nuovo tentativo dopo un timeout:
+  ora il router rinuncia dopo 60 s (senza nuovi tentativi) e la domanda passa all'agente.
+- Regressione (prova guidata di 15 domande in ambito): nessun rifiuto, strumenti usati in 13
+  domande su 15 (12 su 15 prima del router); restano i limiti noti di «e a Roma?» e «che giorno è
+  oggi?».
 
 ### Convertitore di unità (MCP)
 

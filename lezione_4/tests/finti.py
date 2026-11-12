@@ -2,6 +2,9 @@
 
 from langchain_core.messages import AIMessage
 
+from assistente.grafo import costruisci_grafo
+from assistente.router import Classificazione
+
 
 def chiede_ora(fuso: str, id_: str = "c1") -> AIMessage:
     """Risposta del modello che chiede lo strumento orologio."""
@@ -33,3 +36,33 @@ class ModelloCheFallisce:
 
     def invoke(self, messaggi, config=None, **kwargs):
         raise self.errore
+
+
+IN_AMBITO = Classificazione(categoria="conversazione", motivo="domanda su orari")
+FUORI = Classificazione(categoria="fuori_ambito", motivo="ricetta di cucina")
+
+
+class RouterFinto:
+    """Restituisce gli esiti preparati in ordine (ripete l'ultimo); le eccezioni vengono sollevate."""
+
+    def __init__(self, esiti: list):
+        self.esiti = list(esiti)
+        self.chiamate: list[list] = []
+
+    def invoke(self, messaggi, config=None, **kwargs):
+        self.chiamate.append(list(messaggi))
+        esito = self.esiti[min(len(self.chiamate), len(self.esiti)) - 1]
+        if isinstance(esito, Exception):
+            raise esito
+        return esito
+
+
+RIFIUTO = "Non posso aiutarti."
+
+
+def grafo_in_ambito(modello, registro, max_passi=3):
+    """Grafo con router che classifica sempre in ambito: per i test che non riguardano il router."""
+    return costruisci_grafo(
+        modello, registro, max_passi,
+        router=RouterFinto([IN_AMBITO]), ambito="ambito di prova", messaggio_rifiuto=RIFIUTO,
+    )

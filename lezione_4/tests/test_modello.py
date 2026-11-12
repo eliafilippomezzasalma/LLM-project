@@ -7,6 +7,8 @@ CONFIG = Config(
     lm_model="qwen/qwen3.5-9b",
     max_tool_steps=3,
     log_level="INFO",
+    ambito_assistente="orari e calcoli",
+    messaggio_rifiuto="Non posso aiutarti.",
 )
 
 

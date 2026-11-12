@@ -2,7 +2,12 @@ import pytest
 
 from assistente.config import Config, ErroreConfigurazione, carica_config
 
-BASE = {"LM_BASE_URL": "http://localhost:1234/v1", "LM_MODEL": "qwen/qwen3.5-9b"}
+BASE = {
+    "LM_BASE_URL": "http://localhost:1234/v1",
+    "LM_MODEL": "qwen/qwen3.5-9b",
+    "AMBITO_ASSISTENTE": "orari e calcoli",
+    "MESSAGGIO_RIFIUTO": "Non posso aiutarti.",
+}
 
 
 def test_valori_completi():
@@ -12,6 +17,8 @@ def test_valori_completi():
         lm_model="qwen/qwen3.5-9b",
         max_tool_steps=5,
         log_level="DEBUG",
+        ambito_assistente="orari e calcoli",
+        messaggio_rifiuto="Non posso aiutarti.",
     )
 
 
@@ -34,6 +41,21 @@ def test_manca_lm_model():
 def test_variabile_vuota_conta_come_mancante():
     with pytest.raises(ErroreConfigurazione, match="LM_MODEL"):
         carica_config({**BASE, "LM_MODEL": "  "})
+
+
+def test_manca_ambito_assistente():
+    with pytest.raises(ErroreConfigurazione, match="AMBITO_ASSISTENTE"):
+        carica_config({k: v for k, v in BASE.items() if k != "AMBITO_ASSISTENTE"})
+
+
+def test_manca_messaggio_rifiuto():
+    with pytest.raises(ErroreConfigurazione, match="MESSAGGIO_RIFIUTO"):
+        carica_config({k: v for k, v in BASE.items() if k != "MESSAGGIO_RIFIUTO"})
+
+
+def test_ambito_vuoto_conta_come_mancante():
+    with pytest.raises(ErroreConfigurazione, match="AMBITO_ASSISTENTE"):
+        carica_config({**BASE, "AMBITO_ASSISTENTE": "  "})
 
 
 def test_max_tool_steps_non_intero():
@@ -61,5 +83,7 @@ def test_env_letto_dalla_cartella_del_progetto(monkeypatch):
     monkeypatch.setattr(config, "load_dotenv", lambda percorso=None: percorsi.append(percorso))
     monkeypatch.setenv("LM_BASE_URL", "http://localhost:1234/v1")
     monkeypatch.setenv("LM_MODEL", "qwen/qwen3.5-9b")
+    monkeypatch.setenv("AMBITO_ASSISTENTE", "orari e calcoli")
+    monkeypatch.setenv("MESSAGGIO_RIFIUTO", "Non posso aiutarti.")
     carica_config()
     assert percorsi == [Path(config.__file__).resolve().parent.parent / ".env"]

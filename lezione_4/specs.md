@@ -907,3 +907,200 @@ costruttore, da affinare con le misure.
   misure lo suggeriscono.
 - Testo del prompt e delle descrizioni degli strumenti, da affinare con le misure.
 - Dove togliere la riga della nota e quale frase fissa usare per riconoscerla (§15.7).
+
+## 17. Router d'ambito: grafo con due nodi LLM — aggiunto il 2026-11-12
+
+Stato: implementata (2026-11-12); piano: `docs/superpowers/plans/2026-11-12-router-ambito.md`. Indipendente dalla §16 (ancora in specifica, non implementata):
+si parte dal codice del commit `f50307c`, verificato prima di cominciare.
+
+### 17.1 Intento
+
+Primo passo dell'evoluzione dell'assistente in un grafo con **due nodi LLM**. Testo del compito:
+
+> Realizziamo un router che decide se la domanda rientra nell'ambito dell'agente. L'assistente ha
+> un ambito dichiarato in configurazione. Un nodo LLM posto prima dell'agente decide se la domanda
+> rientra nell'ambito o no. La scelta di che tool usare rimane all'agente e così com'è.
+
+**Obiettivo (dall'utente):** le domande fuori ambito ricevono una risposta di rifiuto **senza
+raggiungere l'agente**.
+
+Regola di lavoro dell'utente: ogni passo riparte dal precedente funzionante e verificato, con le
+evidenze richieste.
+
+### 17.2 Ambito (deciso dall'utente)
+
+- **In ambito → categoria `conversazione`:** orari e fusi, conversioni di unità, calcoli,
+  date e scadenze; inoltre saluti, ringraziamenti, «cosa sai fare?» e seguiti che da soli non
+  hanno senso («e a Roma?») — sono conversazione e passano all'agente.
+- **Fuori ambito → categoria `fuori_ambito`:** per esempio ricette, politica, e in generale ciò
+  che non rientra nell'elenco sopra.
+- **Seguiti giudicati nel contesto (deciso dall'utente):** un seguito prende la categoria della
+  domanda a cui si riferisce. «e a Roma?» dopo una domanda sull'ora è `conversazione`;
+  «e quella dell'amatriciana?» dopo una ricetta rifiutata è `fuori_ambito`. Così non si aggira
+  il router riformulando una domanda come seguito. Le misure (§17.9) includono entrambi i casi.
+- *Scelta mia:* una domanda **mista** (una parte in ambito, una fuori, per esempio «converti 5
+  miglia in km e dammi una ricetta») è `conversazione`: passa all'agente, che risponde come oggi.
+
+### 17.3 Grafo
+
+```
+START → router ──(conversazione, o router non valido)──→ agente ⇄ strumenti → END
+              └─(fuori_ambito)────────────────────────→ rifiuto → END
+```
+
+- **router** (nuovo, LLM): classifica la domanda e scrive categoria e motivo nello **stato**
+  (campi nuovi di `StatoAssistente`), **non** nella lista dei messaggi.
+- **agente**: l'attuale nodo `modello`, con il suo giro verso `strumenti`, l'instradamento
+  `instrada` e il limite dei passaggi **invariati** (§6.3, §6.4). *Scelta mia:* il nodo
+  `modello` si rinomina `agente`, così grafo e log usano le parole del compito.
+- **rifiuto** (nuovo, senza LLM): aggiunge ai messaggi un `AIMessage` con la frase fissa
+  della configurazione.
+- **arco condizionale** dopo il router: una funzione esplicita e testabile a parte (come
+  `instrada`) che restituisce `agente` o `rifiuto`.
+- Solo Graph API di LangGraph, come in §6.3. Il limite di ricorsione si alza di quanto serve per
+  i nuovi super-step (router + eventuale rifiuto), così non scatta prima di `MAX_TOOL_STEPS`.
+- `costruisci_grafo` riceve il router (o il suo modello) e la frase di rifiuto come dipendenze,
+  così i test iniettano un router finto.
+
+### 17.4 Il router
+
+- **Stesso modello** di LM Studio (`LM_BASE_URL`, `LM_MODEL`), **senza strumenti collegati**, con
+  il ragionamento disattivato come l'agente (§6.1, `RAGIONAMENTO_DISATTIVATO`).
+- **Output strutturato:** una classe Pydantic con due campi:
+  - `categoria`: `Literal["conversazione", "fuori_ambito"]`;
+  - `motivo`: frase breve in italiano.
+  Si ottiene con `with_structured_output` di `ChatOpenAI`, metodo `json_schema`. **Da verificare
+  per primo** con una chiamata reale al modello. *Scelta mia:* se `json_schema` non funziona con
+  LM Studio e `qwen/qwen3.5-9b`, il ripiego ammesso è un prompt che chiede il JSON seguito dalla
+  validazione Pydantic del testo restituito; **non** `function_calling`, perché collegherebbe uno
+  strumento al router. Il ripiego va riportato all'utente prima di proseguire.
+- *Scelta mia:* il router ha un **timeout proprio più breve** dell'agente (60 s, costante nel
+  codice, non configurabile): un router bloccato non deve ritardare l'agente di 5 minuti. Allo
+  scadere vale il fail-open.
+- **Il router non valuta gli strumenti:** il suo prompt non nomina strumenti né dice come
+  rispondere; giudica solo se la domanda rientra nell'ambito.
+- **Che cosa vede:**
+  - un messaggio di sistema proprio, con le istruzioni di classificazione (nel codice) e il
+    testo dell'ambito (dalla configurazione, §17.5);
+  - la cronologia della sessione ridotta a **sole domande e risposte** (`HumanMessage` e
+    `AIMessage` con testo), senza il prompt di sistema dell'agente, senza chiamate agli
+    strumenti e senza `ToolMessage` (deciso dall'utente);
+  - la domanda corrente.
+  La cronologia serve per i seguiti come «e a Roma?».
+- **Router non valido (fail-open, deciso dall'utente):** se la chiamata al router va in errore
+  (eccezione, timeout, output non conforme allo schema) la domanda **passa all'agente**; il log
+  lo segnala con un WARNING (§17.7). Il rifiuto avviene solo con una categoria valida
+  `fuori_ambito`.
+- Il prompt del router si affina con le misure (§17.9), al massimo tre giri, tenendo il migliore.
+
+### 17.5 Configurazione (decisa dall'utente: variabili d'ambiente in `config.py`)
+
+| Variabile | Contenuto | Obbligatoria |
+|---|---|---|
+| `AMBITO_ASSISTENTE` | descrizione in italiano dell'ambito (§17.2), su una riga | sì |
+| `MESSAGGIO_RIFIUTO` | la frase fissa restituita alle domande fuori ambito | sì |
+
+- *Scelta mia:* obbligatorie come `LM_MODEL`, **senza valore di riserva nel codice** (altrimenti
+  l'ambito tornerebbe nel codice); se mancano, errore all'avvio che nomina la variabile (§6.8).
+- Testo d'esempio in `.env.example`; il `.env` reale va aggiornato a mano (resta fuori da Git).
+  Docker le riceve già tramite `env_file: .env`.
+- `Config` riceve due campi nuovi; i test di `config.py` coprono presenza e assenza.
+
+### 17.6 Cronologia (decisa dall'utente)
+
+- Domanda **in ambito**: come oggi (§6.2 e `Sessione.chiedi`).
+- Domanda **fuori ambito**: in cronologia entrano la domanda e la frase fissa di rifiuto; il
+  **motivo resta solo nel log**, non va né all'agente né al router nei turni successivi.
+- Il rifiuto non provoca `LimitePassaggiRaggiunto` e non tocca la nota non normativa.
+
+### 17.7 Log (livello INFO salvo dove indicato)
+
+- Router: una riga per domanda con categoria, motivo e destinazione, per esempio
+  `INFO router: categoria=conversazione motivo="…" -> agente` oppure `-> rifiuto`.
+- Router non valido: `WARNING router: risposta non valida (…) -> agente`.
+- Agente: **una riga INFO a ogni esecuzione** del nodo `agente` (per esempio
+  `INFO agente: chiamata 1`), così il log dimostra quando l'agente gira e quando no. Cambia
+  quindi la regola di §6.7 «una domanda che non usa lo strumento non produce log».
+- Rifiuto: `INFO rifiuto: risposta fissa`.
+- Il DEBUG già esistente dell'agente resta; il router a DEBUG registra i messaggi inviati.
+
+### 17.8 Evidenze richieste (dall'utente)
+
+1. **Domanda in ambito:** log con categoria, motivo e passaggio all'agente.
+2. **Domanda fuori ambito:** risposta di rifiuto; **nessuna** riga dell'agente nel log.
+3. **Test con risposte del router simulate** per entrambi i percorsi.
+
+### 17.9 Test e verifiche
+
+- **Automatici (router finto, nessun LM Studio):**
+  - percorso `conversazione` → agente eseguito (anche con strumenti), log del router e
+    dell'agente presenti;
+  - percorso `fuori_ambito` → frase fissa, modello dell'agente **mai chiamato**, nessuna riga
+    dell'agente nel log;
+  - router che solleva un'eccezione o restituisce un output non valido → agente eseguito,
+    WARNING;
+  - funzione dell'arco condizionale testata da sola;
+  - il router riceve solo domande e risposte (niente `ToolMessage`, niente chiamate, niente
+    prompt dell'agente) e il testo dell'ambito dalla configurazione;
+  - cronologia dopo un rifiuto: domanda + frase fissa, senza motivo;
+  - configurazione: variabili nuove obbligatorie;
+  - i test esistenti aggiornati al grafo nuovo, tutti verdi.
+- **Reali (LM Studio, `RUN_REAL_TESTS=1`):** almeno un caso in ambito e uno fuori ambito nel
+  file `test_reale.py`; i 9 test reali esistenti restano verdi.
+- **Misure (dal controllore, app vera via stdin):** una serie di domande in ambito (orari,
+  conversioni, calcoli, scadenze), di conversazione (saluti, «cosa sai fare?», seguiti come
+  «e a Roma?») e fuori ambito (ricette, politica, altro), anche con parole diverse dagli esempi
+  del prompt, ripetuta in più sessioni; si contano le righe `router:` e `agente:` del log.
+  Errori da cercare: domanda in ambito rifiutata (il più grave), domanda fuori ambito passata,
+  output non valido. Numeri all'utente e nel README; nessuna soglia bloccante.
+- **Chi misura:** il controllore della sessione, cioè Claude nella sessione principale, non i
+  subagenti. Fa il ciclo misura → ritocco del prompt del router → nuova misura (massimo tre giri)
+  e riporta i numeri di prima mano.
+- **Regressione:** *scelta mia*, poiché l'elenco delle 15 domande della prova guidata non è
+  salvato nel repository, il controllore lo ricostruisce prendendo almeno una domanda per
+  strumento e i casi dei limiti noti. Lo esegue **prima** della modifica, sul codice di
+  `f50307c`, per avere gli esiti di riferimento, e **dopo** la modifica. Criterio: nessuna
+  domanda in ambito rifiutata ed esiti degli strumenti non peggiori di quelli di riferimento.
+  Lo script resta nella scratchpad.
+- **Docker:** `docker compose build`, poi un rifiuto e una domanda in ambito nel container.
+
+### 17.10 Obiettivi
+
+- Nodo router LLM con output strutturato (categoria e motivo) prima dell'agente.
+- Ambito e frase di rifiuto descritti in configurazione, non nel codice.
+- Arco condizionale: conversazione → agente; fuori ambito → rifiuto → fine.
+- Agente e strumenti invariati nel comportamento.
+- Le evidenze di §17.8, prodotte e riportate.
+
+### 17.11 Non-obiettivi
+
+- Più di due categorie, o un instradamento verso agenti diversi (passi successivi).
+- Frase di rifiuto generata dall'LLM o che cita il motivo.
+- Far scegliere gli strumenti al router, o togliere strumenti all'agente.
+- Un modello diverso per il router, o una configurazione del modello separata.
+- Persistenza della cronologia.
+
+### 17.12 Anti-obiettivi (sarebbe un fallimento anche se «funziona»)
+
+- Una domanda in ambito (o un saluto, o un seguito come «e a Roma?») rifiutata.
+- Il nodo agente eseguito per una domanda classificata `fuori_ambito`.
+- L'ambito o la frase di rifiuto scritti nel codice.
+- Il router che menziona o sceglie strumenti, o che cambia il comportamento dell'agente.
+- Il motivo del router che finisce nella risposta o nella cronologia.
+- Un guasto del router che trasforma ogni domanda in un rifiuto.
+
+### 17.13 Vincoli di lavoro
+
+- Solo in `lezione_4/`, sul branch `feature/nuove-funzionalita`; la §16 non committata resta
+  intatta e fuori da questo lavoro.
+- **Commit e push solo su richiesta esplicita dell'utente.**
+- Aggiornare `CLAUDE.md` (struttura del grafo), `README.md` (variabili nuove, log, misure) e la
+  descrizione del grafo in testa a `grafo.py`.
+- Comandi documentati per PowerShell.
+
+### 17.14 Lasciato al costruttore
+
+- Nomi interni (classe dello schema, funzioni, campi dello stato), modulo nuovo o dentro `grafo.py`.
+- Testo delle istruzioni del router e degli esempi in `.env.example`, da affinare con le misure.
+- Formato esatto delle righe di log, purché contengano quanto richiesto in §17.7.
+- Come si riduce la cronologia per il router, purché rispetti §17.4.

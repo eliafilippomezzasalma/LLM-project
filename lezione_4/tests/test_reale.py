@@ -10,6 +10,7 @@ from assistente.config import carica_config
 from assistente.grafo import costruisci_grafo, limite_raggiunto
 from assistente.modello import crea_modello, pulisci_ragionamento
 from assistente.orologio import crea_orologio
+from assistente.router import classifica, crea_router
 from assistente.sessione import PROMPT_SISTEMA
 from assistente.strumenti import crea_registro
 
@@ -22,7 +23,14 @@ pytestmark = [
 def test_tokyo_usa_lo_strumento():
     config = carica_config()
     strumenti = [crea_orologio()]
-    grafo = costruisci_grafo(crea_modello(config, strumenti), crea_registro(strumenti), config.max_tool_steps)
+    grafo = costruisci_grafo(
+        crea_modello(config, strumenti),
+        crea_registro(strumenti),
+        config.max_tool_steps,
+        router=crea_router(config),
+        ambito=config.ambito_assistente,
+        messaggio_rifiuto=config.messaggio_rifiuto,
+    )
 
     stato = grafo.invoke({
         "messages": [SystemMessage(PROMPT_SISTEMA), HumanMessage("Che ore sono a Tokyo?")],
@@ -64,7 +72,14 @@ def _chiedi_con_argomenti(domanda):
         assert all(remoti), "un server MCP non si è avviato"
         nota = NotaNonNormativa()
         strumenti = con_nota([crea_orologio(), *(s for r in remoti for s in r.strumenti())], nota)
-        grafo = costruisci_grafo(crea_modello(config, strumenti), crea_registro(strumenti), config.max_tool_steps)
+        grafo = costruisci_grafo(
+            crea_modello(config, strumenti),
+            crea_registro(strumenti),
+            config.max_tool_steps,
+            router=crea_router(config),
+            ambito=config.ambito_assistente,
+            messaggio_rifiuto=config.messaggio_rifiuto,
+        )
         catturato = {}
 
         class GrafoSpia:
@@ -162,3 +177,37 @@ def test_anno_fuori_intervallo_senza_data_inventata():
     assert all(c.startswith("Errore:") for c in chiamate), chiamate
     giorni = ("lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica")
     assert not any(g in finale.lower() for g in giorni), finale
+
+
+def test_router_in_ambito_reale():
+    config = carica_config()
+    domanda = "Che ore sono a Tokyo?"
+    esito = classifica(crea_router(config), [HumanMessage(domanda)], config.ambito_assistente)
+    assert esito is not None
+    assert esito.categoria == "conversazione", esito
+
+
+def test_router_fuori_ambito_reale(caplog):
+    config = carica_config()
+    domanda = "Dammi la ricetta della carbonara"
+    router = crea_router(config)
+    esito = classifica(router, [HumanMessage(domanda)], config.ambito_assistente)
+    assert esito is not None
+    assert esito.categoria == "fuori_ambito", esito
+
+    strumenti = [crea_orologio()]
+    grafo = costruisci_grafo(
+        crea_modello(config, strumenti),
+        crea_registro(strumenti),
+        config.max_tool_steps,
+        router=router,
+        ambito=config.ambito_assistente,
+        messaggio_rifiuto=config.messaggio_rifiuto,
+    )
+    with caplog.at_level("DEBUG", logger="agente"):
+        stato = grafo.invoke({
+            "messages": [SystemMessage(PROMPT_SISTEMA), HumanMessage(domanda)],
+            "passi_strumento": 0,
+        })
+    assert stato["messages"][-1].content == config.messaggio_rifiuto
+    assert not [r for r in caplog.records if r.name == "agente"]

@@ -23,6 +23,8 @@ class Config:
     lm_model: str
     max_tool_steps: int
     log_level: str
+    ambito_assistente: str
+    messaggio_rifiuto: str
 
 
 def _obbligatoria(env: Mapping[str, str], nome: str) -> str:
@@ -63,4 +65,6 @@ def carica_config(env: Mapping[str, str] | None = None) -> Config:
         lm_model=_obbligatoria(env, "LM_MODEL"),
         max_tool_steps=_max_tool_steps(env),
         log_level=_log_level(env),
+        ambito_assistente=_obbligatoria(env, "AMBITO_ASSISTENTE"),
+        messaggio_rifiuto=_obbligatoria(env, "MESSAGGIO_RIFIUTO"),
     )

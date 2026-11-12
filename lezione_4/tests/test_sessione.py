@@ -7,7 +7,9 @@ from assistente.nota import RIGA_NOTA, NotaNonNormativa, con_nota
 from assistente.orologio import crea_orologio
 from assistente.sessione import PROMPT_SISTEMA, LimitePassaggiRaggiunto, Sessione
 from assistente.strumenti import crea_registro
-from finti import ModelloCheFallisce, ModelloFinto, chiede_ora
+from finti import (
+    FUORI, IN_AMBITO, RIFIUTO, ModelloCheFallisce, ModelloFinto, RouterFinto, chiede_ora, grafo_in_ambito,
+)
 
 REGISTRO = crea_registro([crea_orologio()])
 
@@ -20,7 +22,7 @@ SOLO_PROMPT = [(SystemMessage, PROMPT_SISTEMA)]
 
 
 def _sessione(modello):
-    return Sessione(costruisci_grafo(modello, REGISTRO, max_passi=3))
+    return Sessione(grafo_in_ambito(modello, REGISTRO, max_passi=3))
 
 
 def test_cronologia_iniziale_solo_prompt_di_sistema():
@@ -118,7 +120,7 @@ def test_cronologia_conserva_le_chiamate_al_convertitore():
     # Prova reale: senza esempi nella cronologia, dopo una dozzina di domande il modello
     # smetteva di chiamare il convertitore e rispondeva a mente.
     modello = ModelloFinto([_chiede(KM_MI), AIMessage("Sono 6,21 miglia.")])
-    sessione = Sessione(costruisci_grafo(modello, REGISTRO_CON_CONVERTITORE, max_passi=3))
+    sessione = Sessione(grafo_in_ambito(modello, REGISTRO_CON_CONVERTITORE, max_passi=3))
     assert sessione.chiedi("Converti 10 km in miglia") == "Sono 6,21 miglia."
     tipi = [type(m) for m in sessione.cronologia]
     assert tipi == [SystemMessage, HumanMessage, AIMessage, ToolMessage, AIMessage]
@@ -130,7 +132,7 @@ def test_cronologia_conserva_le_chiamate_al_convertitore():
 def test_cronologia_toglie_l_orologio_da_una_chiamata_mista():
     ora = ("get_current_time", {"timezone": "Asia/Tokyo"}, "o1")
     modello = ModelloFinto([_chiede(ora, KM_MI), AIMessage("Fatto.")])
-    sessione = Sessione(costruisci_grafo(modello, REGISTRO_CON_CONVERTITORE, max_passi=3))
+    sessione = Sessione(grafo_in_ambito(modello, REGISTRO_CON_CONVERTITORE, max_passi=3))
     sessione.chiedi("Che ore sono a Tokyo e quanto fanno 10 km in miglia?")
     chiamate = [c["name"] for m in sessione.cronologia if isinstance(m, AIMessage) for c in m.tool_calls]
     risposte = [m.name for m in sessione.cronologia if isinstance(m, ToolMessage)]
@@ -140,7 +142,7 @@ def test_cronologia_toglie_l_orologio_da_una_chiamata_mista():
 
 def test_secondo_turno_vede_la_chiamata_al_convertitore():
     modello = ModelloFinto([_chiede(KM_MI), AIMessage("Sono 6,21 miglia."), AIMessage("Prego.")])
-    sessione = Sessione(costruisci_grafo(modello, REGISTRO_CON_CONVERTITORE, max_passi=3))
+    sessione = Sessione(grafo_in_ambito(modello, REGISTRO_CON_CONVERTITORE, max_passi=3))
     sessione.chiedi("Converti 10 km in miglia")
     sessione.chiedi("Grazie")
     assert any(isinstance(m, ToolMessage) and m.name == "convert_units" for m in modello.chiamate[-1])
@@ -174,7 +176,7 @@ def test_cronologia_conserva_le_chiamate_alla_calcolatrice():
     registro = crea_registro([crea_orologio(), calcolatrice])
     chiamata = ("calculate", {"expression": "(3.5 + 2) * 4"}, "c1")
     modello = ModelloFinto([_chiede(chiamata), AIMessage("Fa 22.")])
-    sessione = Sessione(costruisci_grafo(modello, registro, max_passi=3))
+    sessione = Sessione(grafo_in_ambito(modello, registro, max_passi=3))
     assert sessione.chiedi("Quanto fa (3,5 + 2) * 4?") == "Fa 22."
     tipi = [type(m) for m in sessione.cronologia]
     assert tipi == [SystemMessage, HumanMessage, AIMessage, ToolMessage, AIMessage]
@@ -201,7 +203,7 @@ def test_cronologia_conserva_le_chiamate_alle_scadenze():
     )
     registro = crea_registro([crea_orologio(), scadenze])
     modello = ModelloFinto([_chiede(("compute_deadline", {"giorni": 3}, "d1")), AIMessage("Scade il 2026-01-02.")])
-    sessione = Sessione(costruisci_grafo(modello, registro, max_passi=3))
+    sessione = Sessione(grafo_in_ambito(modello, registro, max_passi=3))
     assert sessione.chiedi("Quando scade?") == "Scade il 2026-01-02."
     tipi = [type(m) for m in sessione.cronologia]
     assert tipi == [SystemMessage, HumanMessage, AIMessage, ToolMessage, AIMessage]
@@ -217,12 +219,18 @@ SCADENZA = ("compute_deadline", {"giorni": 3}, "d1")
 RISPOSTA_CON_NOTA = AIMessage("Scade il 2026-01-02. Nota: calcolo indicativo, non ha valore legale.")
 
 
-def _sessione_con_nota(risposte, max_passi=3):
+def _sessione_con_nota(risposte, max_passi=3, router=None):
     nota = NotaNonNormativa()
     strumento = StructuredTool.from_function(_scadenza_finta, name="compute_deadline", description="finto")
     registro = crea_registro(con_nota([strumento], nota))
     modello = ModelloFinto(risposte)
-    return Sessione(costruisci_grafo(modello, registro, max_passi=max_passi), nota), nota, modello
+    if router is None:
+        grafo = grafo_in_ambito(modello, registro, max_passi=max_passi)
+    else:
+        grafo = costruisci_grafo(
+            modello, registro, max_passi, router=router, ambito="ambito di prova", messaggio_rifiuto=RIFIUTO
+        )
+    return Sessione(grafo, nota), nota, modello
 
 
 def _tool_message_finale(modello):
@@ -266,7 +274,7 @@ def test_nessuna_nota_senza_compute_deadline():
     altro = StructuredTool.from_function(lambda a: "info", name="date_info", description="finto")
     nota2 = NotaNonNormativa()
     modello = ModelloFinto([_chiede(("date_info", {"a": "x"}, "i1")), AIMessage("Info.")])
-    sessione2 = Sessione(costruisci_grafo(modello, crea_registro(con_nota([altro], nota2)), max_passi=3), nota2)
+    sessione2 = Sessione(grafo_in_ambito(modello, crea_registro(con_nota([altro], nota2)), max_passi=3), nota2)
     assert sessione2.chiedi("Info?") == "Info."
     assert nota2.consegnata is False
 
@@ -276,3 +284,24 @@ def test_nota_ripresentata_se_il_turno_fallisce():
     with pytest.raises(LimitePassaggiRaggiunto):
         sessione.chiedi("Scadenza tra 3 giorni?")
     assert nota.consegnata is False
+
+
+def test_rifiuto_in_cronologia_senza_motivo():
+    modello = ModelloFinto([AIMessage("non deve parlare")])
+    grafo = costruisci_grafo(
+        modello, REGISTRO, 3, router=RouterFinto([FUORI]), ambito="ambito di prova", messaggio_rifiuto=RIFIUTO
+    )
+    sessione = Sessione(grafo)
+    assert sessione.chiedi("ricetta della carbonara") == RIFIUTO
+    assert _contenuto(sessione.cronologia) == [
+        (SystemMessage, PROMPT_SISTEMA), (HumanMessage, "ricetta della carbonara"), (AIMessage, RIFIUTO),
+    ]
+    assert not any("ricetta di cucina" in str(m.content) for m in sessione.cronologia)
+
+
+def test_rifiuto_dopo_una_scadenza_senza_nota():
+    sessione, nota, _ = _sessione_con_nota(
+        [_chiede(SCADENZA), RISPOSTA_CON_NOTA], router=RouterFinto([IN_AMBITO, FUORI])
+    )
+    sessione.chiedi("Scadenza tra 3 giorni?")
+    assert sessione.chiedi("ricetta della carbonara") == RIFIUTO
