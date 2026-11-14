@@ -56,6 +56,32 @@ def test_giro_completo(caplog):
     assert len([r for r in caplog.records if r.levelname == "INFO" and r.name == "strumenti"]) == 1
 
 
+def test_testo_insieme_alle_chiamate_tolto_e_registrato(caplog):
+    # Prova reale del 2026-11-13: il modello scriveva «17 × 23 = 391…» insieme alla chiamata a
+    # days_between; vedendolo, la risposta finale riportava solo i giorni e l'utente, che vede
+    # solo l'ultimo messaggio, perdeva gli altri risultati.
+    caplog.set_level(logging.DEBUG)
+    con_testo = chiede_ora("Asia/Tokyo").model_copy(update={"content": "Intanto: 17 × 23 = 391."})
+    modello = ModelloFinto([con_testo, AIMessage("A Tokyo sono le 20:30.")])
+    stato = _domanda(grafo_in_ambito(modello, REGISTRO, max_passi=3))
+
+    chiamata = stato["messages"][1]
+    assert chiamata.content == ""
+    assert [c["name"] for c in chiamata.tool_calls] == ["get_current_time"]
+    assert modello.chiamate[1][1].content == ""  # il modello non rivede il testo al passaggio dopo
+    assert stato["messages"][-1].content == "A Tokyo sono le 20:30."
+    assert any(
+        r.name == "agente" and r.levelname == "DEBUG" and "Intanto: 17 × 23 = 391." in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_risposta_finale_senza_chiamate_conserva_il_testo():
+    modello = ModelloFinto([AIMessage("Ciao!")])
+    stato = _domanda(grafo_in_ambito(modello, REGISTRO, max_passi=3), "Ciao")
+    assert stato["messages"][-1].content == "Ciao!"
+
+
 def test_risposta_diretta_senza_strumento():
     modello = ModelloFinto([AIMessage("Ciao Elia!")])
     stato = _domanda(grafo_in_ambito(modello, REGISTRO, max_passi=3), "Ciao")

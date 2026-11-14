@@ -40,11 +40,16 @@ def test_prompt_sistema_vieta_di_calcolare_tra_fusi():
     assert "non calcolare l'ora partendo da un altro fuso" in PROMPT_SISTEMA
 
 
-def test_cronologia_solo_domanda_e_risposta():
+def test_cronologia_conserva_le_chiamate_all_orologio():
+    # Prova reale del 2026-11-13: senza le chiamate all'orologio in cronologia, ai seguiti
+    # («e a Roma?») il modello copiava l'ora della risposta precedente spostando il fuso a mente
+    # (orologio chiamato 3/12 volte); tenendole, 10/12 e nessun orario inventato.
     sessione = _sessione(ModelloFinto([chiede_ora("Asia/Tokyo"), AIMessage("A Tokyo sono le 20:30.")]))
     assert sessione.chiedi("Che ore sono a Tokyo?") == "A Tokyo sono le 20:30."
-    assert [type(m) for m in sessione.cronologia] == [SystemMessage, HumanMessage, AIMessage]
-    assert not any(isinstance(m, ToolMessage) for m in sessione.cronologia)
+    tipi = [type(m) for m in sessione.cronologia]
+    assert tipi == [SystemMessage, HumanMessage, AIMessage, ToolMessage, AIMessage]
+    assert [c["name"] for c in sessione.cronologia[2].tool_calls] == ["get_current_time"]
+    assert sessione.cronologia[3].name == "get_current_time"
     assert not sessione.cronologia[-1].tool_calls
 
 
@@ -129,15 +134,15 @@ def test_cronologia_conserva_le_chiamate_al_convertitore():
     assert sessione.cronologia[3].tool_call_id == "k1"
 
 
-def test_cronologia_toglie_l_orologio_da_una_chiamata_mista():
+def test_cronologia_conserva_orologio_e_convertitore_in_una_chiamata_mista():
     ora = ("get_current_time", {"timezone": "Asia/Tokyo"}, "o1")
     modello = ModelloFinto([_chiede(ora, KM_MI), AIMessage("Fatto.")])
     sessione = Sessione(grafo_in_ambito(modello, REGISTRO_CON_CONVERTITORE, max_passi=3))
     sessione.chiedi("Che ore sono a Tokyo e quanto fanno 10 km in miglia?")
     chiamate = [c["name"] for m in sessione.cronologia if isinstance(m, AIMessage) for c in m.tool_calls]
     risposte = [m.name for m in sessione.cronologia if isinstance(m, ToolMessage)]
-    assert chiamate == ["convert_units"]
-    assert risposte == ["convert_units"]
+    assert chiamate == ["get_current_time", "convert_units"]
+    assert risposte == ["get_current_time", "convert_units"]
 
 
 def test_secondo_turno_vede_la_chiamata_al_convertitore():
@@ -193,6 +198,14 @@ def test_prompt_oggi_sempre_dall_orologio():
     # Misura del 2026-11-09: dopo «affitto firmato il 15/03/2024», «quanti giorni mancano al 25/12/2026?»
     # usava 2024-03-15 come oggi (2 sessioni su 6). Le date delle domande precedenti non sono oggi.
     assert "non sono la data di oggi" in PROMPT_SISTEMA
+
+
+def test_prompt_giorni_mai_a_mente_nelle_domande_multiple():
+    # Misura del 2026-11-14: nelle domande multiple («17*23, 5 miglia in km e giorni a Natale»)
+    # il modello prendeva la data dall'orologio e contava i giorni da solo, sbagliando
+    # (days_between 11/18 e 7/10 sulle varianti); con la regola 10/10 e 9/10.
+    assert "Anche quando la domanda contiene più richieste" in PROMPT_SISTEMA
+    assert "non contare mai i giorni da solo" in PROMPT_SISTEMA
     assert "«mancano»" in PROMPT_SISTEMA and "«fra N giorni»" in PROMPT_SISTEMA
     assert "poi days_between con from_date" in PROMPT_SISTEMA  # esempio di chiamata, non di risposta
 

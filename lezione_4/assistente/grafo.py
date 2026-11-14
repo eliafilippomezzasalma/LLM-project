@@ -92,6 +92,11 @@ def costruisci_grafo(
         ragionamento = risposta.additional_kwargs.get("reasoning_content")
         if ragionamento:
             log_agente.debug("ragionamento: %s", ragionamento)
+        if _chiede_strumenti(risposta) and risposta.text.strip():
+            # L'utente vede solo la risposta finale: se il modello rivedesse risultati scritti
+            # insieme alle chiamate, nella risposta finale riporterebbe solo quelli mancanti.
+            log_agente.debug("testo insieme alle chiamate, tolto: %s", risposta.text)
+            risposta = risposta.model_copy(update={"content": ""})
         return {"messages": [risposta]}
 
     def nodo_strumenti(stato: StatoAssistente) -> dict:

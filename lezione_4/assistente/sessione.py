@@ -65,11 +65,16 @@ PROMPT_SISTEMA = (
     "Se la scadenza è stata spostata, riporta la data calcolata, il motivo e la data finale. "
     "Se il risultato contiene una riga «Nota:», riportala così com'è nella risposta. "
     "Se uno di questi strumenti restituisce un errore, spiega il motivo e fermati, senza calcolare "
-    "la data da solo."
+    "la data da solo. "
+    "Anche quando la domanda contiene più richieste (per esempio «quanto fa 17*23 e quanti giorni "
+    "mancano a Natale?»), dopo aver ricevuto la data da get_current_time chiama days_between con quella "
+    "data: non contare mai i giorni da solo, nemmeno quando conosci già la data di oggi."
 )
 # Strumenti le cui chiamate restano nella cronologia: sono esempi utili al modello per
-# continuare a usarli. Le chiamate all'orologio no: un orario vecchio non deve restare.
+# continuare a usarli. Anche l'orologio: senza le sue chiamate il modello vedeva solo orari
+# nelle risposte e ai seguiti («e a Roma?») li copiava spostando il fuso a mente (2026-11-13).
 STRUMENTI_IN_CRONOLOGIA = frozenset({
+    "get_current_time",
     "convert_units",
     "calculate",
     "compute_deadline",

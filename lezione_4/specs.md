@@ -116,10 +116,13 @@ Ciao!
 - Righe vuote ignorate.
 - La cronologia (messaggio di sistema + scambi precedenti) viene passata al grafo a ogni
   domanda ed è tenuta come lista in memoria dall'interfaccia da terminale.
-- Di un turno riuscito la cronologia conserva **solo** il messaggio dell'utente e la risposta
-  finale; `AIMessage` con tool_call e `ToolMessage` restano visibili nei log ma non vengono
-  salvati. Così un orario vecchio non resta nel contesto e, a domande come «e adesso?», il
-  modello deve richiamare lo strumento.
+- Di un turno riuscito la cronologia conserva il messaggio dell'utente, le chiamate allo
+  strumento con le loro risposte (`AIMessage` con tool_call e `ToolMessage`) e la risposta
+  finale. *Modificato il 2026-11-13:* prima chiamate e risposte dell'orologio non venivano
+  salvate, per non lasciare un orario vecchio nel contesto; ma l'orario restava comunque nella
+  risposta finale e, senza esempi di chiamata, ai seguiti («e a Roma?») il modello lo copiava
+  spostando il fuso a mente (prova reale: orologio chiamato 3 volte su 12 contro 10 su 12
+  tenendo le chiamate, nessun orario inventato).
 - Il messaggio di sistema (in italiano) dice al modello di usare **sempre** lo strumento per
   conoscere l'ora attuale, di non riutilizzare orari citati in precedenza e di non calcolare
   l'ora di un fuso partendo da un altro (aggiunto il 2026-11-01: nella prova reale, a «e a
@@ -145,7 +148,13 @@ START → modello ──(ci sono tool_calls e passi < limite)──→ strumenti
 ```
 
 - **modello**: invia i messaggi al modello con lo strumento collegato (`bind_tools`) e
-  aggiunge la risposta allo stato.
+  aggiunge la risposta allo stato. *Aggiunto il 2026-11-14:* se la risposta contiene chiamate
+  agli strumenti **e** del testo, il testo viene registrato a DEBUG
+  (`agente: testo insieme alle chiamate, tolto: …`) e tolto dal messaggio prima di entrare nello
+  stato. L'utente vede solo la risposta finale: nella prova reale il modello scriveva
+  «17 × 23 = 391, 5 miglia = 8,05 km» insieme alla chiamata a `days_between` e, rivedendolo,
+  nella risposta finale riportava solo i giorni a Natale (1 risposta su 10 senza gli altri
+  risultati; 0 su 18 dopo la correzione).
 - **strumenti**: nodo scritto a mano: per ogni `tool_call` esegue lo strumento, scrive il log
   e aggiunge un `ToolMessage`; incrementa il contatore di 1 (più tool_call nello stesso
   messaggio contano come un solo passaggio).
@@ -296,8 +305,10 @@ docker compose run --rm assistente
 - grafo con modello finto che prima chiede l'orologio e poi risponde: sequenza
   `AIMessage` con tool_call → `ToolMessage` → risposta finale, e riga di log INFO;
 - grafo con modello finto che chiede sempre lo strumento: si ferma al limite;
-- cronologia: il secondo turno riceve domanda e risposta finale del primo (senza tool_call né
-  `ToolMessage`); un turno fallito o interrotto dal limite non sporca la cronologia;
+- cronologia: il secondo turno riceve domanda, chiamate all'orologio con le risposte e risposta finale del primo
+  (aggiornato il 2026-11-13); un turno fallito o interrotto dal limite non sporca la cronologia;
+- testo insieme alle chiamate: tolto dal messaggio e registrato a DEBUG; una risposta finale
+  senza chiamate resta intatta (aggiunto il 2026-11-14);
 - ragionamento: un contenuto con `<think>…</think>` viene ripulito;
 - configurazione: variabile mancante o `MAX_TOOL_STEPS` non valido → errore chiaro.
 
@@ -819,7 +830,8 @@ Struttura analoga a convertitore e calcolatrice, per confrontarli a lezione:
 - **Grafo e registro** non cambiano struttura.
 - **Cronologia** (*scelta mia*): le chiamate agli strumenti delle scadenze restano nella
   cronologia della sessione, come `convert_units` e `calculate`; l'orologio resta escluso come
-  oggi (l'ora non va riusata).
+  oggi (l'ora non va riusata). *Superato il 2026-11-13:* anche l'orologio resta in cronologia
+  (vedi §6.2).
 - **Docker**: il `Dockerfile` copia anche `scadenze.py` e `festivita.json`.
 - **Nessuna dipendenza nuova.**
 
@@ -836,6 +848,15 @@ riportare data calcolata, motivo e data finale quando c'è uno spostamento; ripo
 non normativa **così com'è** quando è nel risultato; dopo un errore spiegare e fermarsi. Lezione dalla calcolatrice: non descrivere nel
 prompt ciò che lo strumento **non** sa fare (fa rispondere senza strumento). Testo preciso al
 costruttore, da affinare con le misure.
+
+*Aggiunto il 2026-11-14 (domande multiple):* il prompt dice anche che, quando la domanda contiene
+più richieste (per esempio «quanto fa 17*23 e quanti giorni mancano a Natale?»), dopo aver ricevuto
+la data da `get_current_time` va chiamato `days_between`, senza mai contare i giorni a mente. Misura
+(10 prove per riga, con tre turni precedenti): sulla domanda «17*23, 5 miglia in km e giorni a
+Natale» `days_between` passa da 11/18 a 10/10 (giorni sbagliati da 3/18 a 0/10); su cinque domande
+multiple diverse dall'esempio da 7/10 a 9/10 (2/10 → 0/10 numeri inventati). Una regola alternativa
+(«l'utente vede solo l'ultima risposta, riporta tutti i risultati») è stata provata e scartata:
+peggiorava (5/10 contro 6/10).
 
 ### 15.11 Test e verifiche
 
