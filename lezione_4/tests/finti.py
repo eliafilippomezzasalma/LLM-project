@@ -3,6 +3,7 @@
 from langchain_core.messages import AIMessage
 
 from assistente.grafo import costruisci_grafo
+from assistente.revisore import Giudizio
 from assistente.router import Classificazione
 
 
@@ -15,15 +16,20 @@ def chiede_ora(fuso: str, id_: str = "c1") -> AIMessage:
 
 
 class ModelloFinto:
-    """Restituisce le risposte preparate in ordine; finite quelle, ripete l'ultima."""
+    """Restituisce le risposte preparate in ordine; finite quelle, ripete l'ultima.
 
-    def __init__(self, risposte: list[AIMessage]):
+    Un'eccezione nella lista viene sollevata al suo turno (errore del modello in una chiamata).
+    """
+
+    def __init__(self, risposte: list[AIMessage | Exception]):
         self.risposte = list(risposte)
         self.chiamate: list[list] = []
 
     def invoke(self, messaggi, config=None, **kwargs) -> AIMessage:
         self.chiamate.append(list(messaggi))
         indice = min(len(self.chiamate), len(self.risposte)) - 1
+        if isinstance(self.risposte[indice], Exception):
+            raise self.risposte[indice]
         # Copia senza id: il reducer add_messages assegna un id a ogni messaggio nuovo.
         return self.risposte[indice].model_copy(update={"id": None})
 
@@ -38,8 +44,16 @@ class ModelloCheFallisce:
         raise self.errore
 
 
-IN_AMBITO = Classificazione(categoria="conversazione", motivo="domanda su orari")
-FUORI = Classificazione(categoria="fuori_ambito", motivo="ricetta di cucina")
+IN_AMBITO = Classificazione(
+    motivo="domanda su orari", parti_fuori_ambito=[], domanda_in_ambito="Che ore sono?", categoria="conversazione"
+)
+FUORI = Classificazione(motivo="ricetta di cucina", parti_fuori_ambito=["ricetta"], domanda_in_ambito="", categoria="fuori_ambito")
+MISTA = Classificazione(
+    motivo="ora in ambito, ricetta fuori ambito",
+    parti_fuori_ambito=["dammi la ricetta della pizza"],
+    domanda_in_ambito="Che ore sono a Tokyo?",
+    categoria="conversazione",
+)
 
 
 class RouterFinto:
@@ -57,12 +71,21 @@ class RouterFinto:
         return esito
 
 
+class RevisoreFinto(RouterFinto):
+    """Stesso comportamento di RouterFinto (esiti in ordine, ripete l'ultimo, solleva le eccezioni)."""
+
+
+APPROVATA = Giudizio(motivo="risponde a tutto", regola="nessuna", coerente=True)
+RESPINTA = Giudizio(motivo="manca la seconda parte", regola="completezza", coerente=False)
+
 RIFIUTO = "Non posso aiutarti."
 
 
-def grafo_in_ambito(modello, registro, max_passi=3):
-    """Grafo con router che classifica sempre in ambito: per i test che non riguardano il router."""
+def grafo_in_ambito(modello, registro, max_passi=3, revisore=None, max_revisioni=2):
+    """Grafo con router sempre in ambito e revisore che approva (se non indicato altrimenti)."""
     return costruisci_grafo(
         modello, registro, max_passi,
         router=RouterFinto([IN_AMBITO]), ambito="ambito di prova", messaggio_rifiuto=RIFIUTO,
+        revisore=revisore if revisore is not None else RevisoreFinto([APPROVATA]),
+        max_revisioni=max_revisioni,
     )

@@ -10,7 +10,8 @@ from assistente.config import carica_config
 from assistente.grafo import costruisci_grafo, limite_raggiunto
 from assistente.modello import crea_modello, pulisci_ragionamento
 from assistente.orologio import crea_orologio
-from assistente.router import classifica, crea_router
+from assistente.revisore import crea_revisore, respinta, rivedi
+from assistente.router import classifica, crea_router, domanda_mista
 from assistente.sessione import PROMPT_SISTEMA
 from assistente.strumenti import crea_registro
 
@@ -30,6 +31,8 @@ def test_tokyo_usa_lo_strumento():
         router=crea_router(config),
         ambito=config.ambito_assistente,
         messaggio_rifiuto=config.messaggio_rifiuto,
+        revisore=crea_revisore(config),
+        max_revisioni=config.max_revisioni,
     )
 
     stato = grafo.invoke({
@@ -79,6 +82,8 @@ def _chiedi_con_argomenti(domanda):
             router=crea_router(config),
             ambito=config.ambito_assistente,
             messaggio_rifiuto=config.messaggio_rifiuto,
+            revisore=crea_revisore(config),
+            max_revisioni=config.max_revisioni,
         )
         catturato = {}
 
@@ -203,6 +208,8 @@ def test_router_fuori_ambito_reale(caplog):
         router=router,
         ambito=config.ambito_assistente,
         messaggio_rifiuto=config.messaggio_rifiuto,
+        revisore=crea_revisore(config),
+        max_revisioni=config.max_revisioni,
     )
     with caplog.at_level("DEBUG", logger="agente"):
         stato = grafo.invoke({
@@ -211,3 +218,216 @@ def test_router_fuori_ambito_reale(caplog):
         })
     assert stato["messages"][-1].content == config.messaggio_rifiuto
     assert not [r for r in caplog.records if r.name == "agente"]
+
+
+# ── Revisore della risposta (specs.md §18) ──────────────────────────────────────
+
+def _turno(domanda, passi, risposta):
+    """Costruisce un turno: domanda, poi (strumento, argomenti, risultato) per ogni passo, poi la risposta."""
+    messaggi = [HumanMessage(domanda)]
+    for i, (nome, argomenti, risultato) in enumerate(passi, start=1):
+        id_chiamata = f"call_{i}"
+        messaggi.append(AIMessage("", tool_calls=[{"name": nome, "args": argomenti, "id": id_chiamata}]))
+        messaggi.append(ToolMessage(risultato, tool_call_id=id_chiamata, name=nome))
+    messaggi.append(AIMessage(risposta))
+    return messaggi
+
+
+def _giudica(messaggi):
+    config = carica_config()
+    giudizio = rivedi(crea_revisore(config), messaggi, 0, config.ambito_assistente)
+    assert giudizio is not None, "il revisore non ha dato un giudizio valido"
+    print("\nGiudizio:", giudizio)
+    return giudizio
+
+
+_CONVERSIONE = ("convert_units", {"value": 10, "from_unit": "mi", "to_unit": "km"}, "10 mi = 16.0934 km")
+
+
+def test_revisore_respinge_risposta_parziale_reale():
+    messaggi = _turno(
+        "Converti 10 miglia in km e calcola 15 per 4", [_CONVERSIONE], "10 miglia sono 16,0934 km."
+    )
+    assert respinta(_giudica(messaggi))
+
+
+def test_revisore_respinge_valore_a_mente_reale():
+    messaggi = _turno("Quanti giorni mancano a Natale?", [], "Mancano 41 giorni.")
+    assert respinta(_giudica(messaggi))
+
+
+def test_revisore_approva_risposta_completa_reale():
+    messaggi = _turno(
+        "Quanti giorni mancano a Natale?",
+        [
+            ("get_current_time", {"timezone": "Europe/Rome"},
+             "sabato 14 novembre 2026, 10:00:00 — Europe/Rome (UTC+01:00)"),
+            ("days_between", {"from_date": "2026-11-14", "to_date": "2026-12-25"},
+             "Il 2026-12-25 viene 41 giorni dopo 2026-11-14."),
+        ],
+        "Oggi è sabato 14 novembre 2026: a Natale (25 dicembre) mancano 41 giorni.",
+    )
+    assert not respinta(_giudica(messaggi))
+
+
+def test_revisore_ignora_parte_fuori_ambito_reale():
+    messaggi = _turno(
+        "converti 5 miglia in km e dammi una ricetta",
+        [("convert_units", {"value": 5, "from_unit": "mi", "to_unit": "km"}, "5 mi = 8.04672 km")],
+        "5 miglia sono 8,04672 km. Per la ricetta non posso aiutarti: non rientra nei miei compiti.",
+    )
+    assert not respinta(_giudica(messaggi))
+
+
+def test_router_estrae_le_parti_di_una_domanda_mista_reale():
+    config = carica_config()
+    domanda = "Che ore sono a Tokyo? E dammi la ricetta della pizza margherita"
+    esito = classifica(crea_router(config), [HumanMessage(domanda)], config.ambito_assistente)
+    print("\nClassificazione:", esito)
+    assert esito is not None and esito.categoria == "conversazione", esito
+    mista = domanda_mista(esito, domanda)
+    assert mista is not None, esito
+    assert "tokyo" in mista.domanda_in_ambito.lower() and "pizza" not in mista.domanda_in_ambito.lower()
+    assert any("pizza" in parte.lower() for parte in mista.parti_fuori_ambito)
+
+
+@pytest.mark.parametrize(
+    "precedente, risposta, domanda",
+    [
+        (
+            "Converti 5 miglia in km e dammi la ricetta della pizza",
+            "5 miglia sono circa 8,05 km. Per la ricetta non posso aiutarti: non rientra nei miei compiti.",
+            "Quali sono le festività di aprile 2027?",
+        ),
+        (
+            "Converti 3,7 km in miglia e consigliami un film",
+            "3,7 km sono circa 2,3 miglia. Per il film non posso aiutarti: non rientra nei miei compiti.",
+            "e in piedi?",
+        ),
+    ],
+)
+def test_router_non_ripete_le_parti_escluse_del_turno_prima_reale(precedente, risposta, domanda):
+    # Misura g7: dopo una domanda mista il router segnava «mista» anche la domanda seguente.
+    config = carica_config()
+    cronologia = [HumanMessage(precedente), AIMessage(risposta), HumanMessage(domanda)]
+    esito = classifica(crea_router(config), cronologia, config.ambito_assistente)
+    print("\nClassificazione:", esito)
+    assert esito is not None and esito.categoria == "conversazione", esito
+    assert domanda_mista(esito, domanda) is None, esito
+
+
+def test_revisore_approva_risposta_giusta_a_domanda_mista_reale():
+    # Catena vera router -> riduzione -> revisore (V2c): la parte fuori ambito non va pretesa.
+    config = carica_config()
+    domanda = "Converti 5 miglia in km e scrivimi una poesia sul mare"
+    esito = classifica(crea_router(config), [HumanMessage(domanda)], config.ambito_assistente)
+    mista = domanda_mista(esito, domanda) if esito is not None else None
+    print("\nClassificazione:", esito)
+    assert mista is not None, esito
+    messaggi = _turno(
+        domanda,
+        [("convert_units", {"value": 5, "from_unit": "mi", "to_unit": "km"}, "5 mi = 8.04672 km")],
+        "5 miglia sono circa 8,05 km. Per la poesia non posso aiutarti: non rientra nei miei compiti.",
+    )
+    giudizio = rivedi(crea_revisore(config), messaggi, 0, config.ambito_assistente, mista)
+    print("Giudizio:", giudizio)
+    assert giudizio is not None and not respinta(giudizio)
+
+
+class _ModelloMisto:
+    """Prime due chiamate scritte a mano (strumento, poi risposta parziale); dalla terza il modello vero."""
+
+    def __init__(self, vero):
+        self.vero = vero
+        self.chiamate = 0
+
+    def invoke(self, messaggi, config=None, **kw):
+        self.chiamate += 1
+        if self.chiamate == 1:
+            nome, argomenti, _ = _CONVERSIONE
+            return AIMessage("", tool_calls=[{"name": nome, "args": argomenti, "id": "call_misto"}])
+        if self.chiamate == 2:
+            ultimo = next(m for m in reversed(messaggi) if isinstance(m, ToolMessage))
+            return AIMessage(f"Ecco la conversione: {ultimo.content}.")
+        return self.vero.invoke(messaggi, config, **kw)
+
+
+def _righe_revisore(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == "revisore"]
+
+
+def _approvata(riga):
+    """Approvazione, anche come rifiuto senza regola (trattato come coerente)."""
+    return "coerente=sì" in riga or "trattato come coerente" in riga
+
+
+def test_parziale_poi_completa_reale(caplog):
+    from assistente.terminale import collega_calcolatrice, collega_convertitore
+
+    config = carica_config()
+    remoti = [collega_convertitore(), collega_calcolatrice()]
+    try:
+        assert all(remoti), "un server MCP non si è avviato"
+        strumenti = [crea_orologio(), *(s for r in remoti for s in r.strumenti())]
+        grafo = costruisci_grafo(
+            _ModelloMisto(crea_modello(config, strumenti)),
+            crea_registro(strumenti),
+            config.max_tool_steps,
+            router=crea_router(config),
+            ambito=config.ambito_assistente,
+            messaggio_rifiuto=config.messaggio_rifiuto,
+            revisore=crea_revisore(config),
+            max_revisioni=config.max_revisioni,
+        )
+        with caplog.at_level("INFO", logger="revisore"):
+            stato = grafo.invoke({
+                "messages": [
+                    SystemMessage(PROMPT_SISTEMA),
+                    HumanMessage("Converti 10 miglia in km e calcola 15 per 4"),
+                ],
+                "passi_strumento": 0,
+            })
+    finally:
+        for remoto in remoti:
+            if remoto:
+                remoto.chiudi()
+    righe = _righe_revisore(caplog)
+    finale = stato["messages"][-1].content
+    print("\nRevisore:", righe, "\nRisposta:", finale)
+    assert any("-> agente (revisione" in r for r in righe), righe
+    assert _approvata(righe[-1]), righe
+    assert "60" in finale, finale
+
+
+def test_coerente_al_primo_passaggio_reale(caplog):
+    from assistente.nota import NotaNonNormativa, con_nota
+    from assistente.terminale import collega_calcolatrice, collega_convertitore, collega_scadenze
+
+    config = carica_config()
+    remoti = [collega_convertitore(), collega_calcolatrice(), collega_scadenze()]
+    try:
+        assert all(remoti), "un server MCP non si è avviato"
+        strumenti = con_nota([crea_orologio(), *(s for r in remoti for s in r.strumenti())], NotaNonNormativa())
+        grafo = costruisci_grafo(
+            crea_modello(config, strumenti),
+            crea_registro(strumenti),
+            config.max_tool_steps,
+            router=crea_router(config),
+            ambito=config.ambito_assistente,
+            messaggio_rifiuto=config.messaggio_rifiuto,
+            revisore=crea_revisore(config),
+            max_revisioni=config.max_revisioni,
+        )
+        with caplog.at_level("INFO", logger="revisore"):
+            stato = grafo.invoke({
+                "messages": [SystemMessage(PROMPT_SISTEMA), HumanMessage("Quanti km sono 5 miglia?")],
+                "passi_strumento": 0,
+            })
+    finally:
+        for remoto in remoti:
+            if remoto:
+                remoto.chiudi()
+    righe = _righe_revisore(caplog)
+    print("\nRevisore:", righe, "\nRisposta:", stato["messages"][-1].content)
+    assert len(righe) == 1, righe
+    assert _approvata(righe[0]), righe

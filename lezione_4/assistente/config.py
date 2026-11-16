@@ -25,6 +25,7 @@ class Config:
     log_level: str
     ambito_assistente: str
     messaggio_rifiuto: str
+    max_revisioni: int = 3
 
 
 def _obbligatoria(env: Mapping[str, str], nome: str) -> str:
@@ -43,6 +44,19 @@ def _max_tool_steps(env: Mapping[str, str]) -> int:
     if valore < 1:
         raise ErroreConfigurazione(
             f"MAX_TOOL_STEPS deve essere un intero maggiore o uguale a 1, trovato: {grezzo!r}"
+        )
+    return valore
+
+
+def _max_revisioni(env: Mapping[str, str]) -> int:
+    grezzo = env.get("MAX_REVISIONI", "3").strip()
+    try:
+        valore = int(grezzo)
+    except ValueError:
+        valore = -1
+    if valore < 0:
+        raise ErroreConfigurazione(
+            f"MAX_REVISIONI deve essere un intero maggiore o uguale a 0, trovato: {grezzo!r}"
         )
     return valore
 
@@ -67,4 +81,5 @@ def carica_config(env: Mapping[str, str] | None = None) -> Config:
         log_level=_log_level(env),
         ambito_assistente=_obbligatoria(env, "AMBITO_ASSISTENTE"),
         messaggio_rifiuto=_obbligatoria(env, "MESSAGGIO_RIFIUTO"),
+        max_revisioni=_max_revisioni(env),
     )

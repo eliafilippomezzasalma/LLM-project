@@ -121,13 +121,17 @@ def _chiamate_da_conservare(passaggi: list[BaseMessage]) -> list[BaseMessage]:
     """Dei passaggi intermedi tiene solo le chiamate (e le risposte) di STRUMENTI_IN_CRONOLOGIA.
 
     Le altre restano solo nei log. Ogni chiamata conservata ha la sua risposta, come
-    richiede l'API: le chiamate miste vengono ridotte a quelle conservate.
+    richiede l'API: le chiamate miste vengono ridotte a quelle conservate, e una chiamata
+    mai eseguita (limite degli strumenti dopo una revisione) non viene conservata.
     """
+    risposte = {m.tool_call_id for m in passaggi if isinstance(m, ToolMessage)}
     conservati: list[BaseMessage] = []
     id_conservati: set[str] = set()
     for messaggio in passaggi:
         if isinstance(messaggio, AIMessage):
-            chiamate = [c for c in messaggio.tool_calls if c["name"] in STRUMENTI_IN_CRONOLOGIA]
+            chiamate = [
+                c for c in messaggio.tool_calls if c["name"] in STRUMENTI_IN_CRONOLOGIA and c["id"] in risposte
+            ]
             if chiamate:
                 conservati.append(AIMessage(content="", tool_calls=chiamate))
                 id_conservati.update(c["id"] for c in chiamate if c["id"])

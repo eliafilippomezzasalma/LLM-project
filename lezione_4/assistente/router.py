@@ -1,7 +1,8 @@
 """Router d'ambito: un modello classifica la domanda prima che parta l'agente."""
 
 import logging
-from typing import Literal
+import re
+from typing import Literal, NamedTuple
 
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable
@@ -29,14 +30,49 @@ Regole:
 - Classifica solo in base all'ambito indicato, non alla tua opinione su che cosa sia utile.
 - Un seguito («e a Tokyo?», «e 3 km?», «e quella dell'amatriciana?») prende la categoria della domanda precedente a cui si riferisce: guarda la cronologia.
 - Una domanda mista con almeno una parte in ambito è conversazione.
-- Il motivo è una frase breve."""
+- Il motivo è una frase breve.
+- Poi scrivi in parti_fuori_ambito le parti della richiesta che sono fuori ambito (lista vuota se non ce ne sono) e in domanda_in_ambito la richiesta riscritta con le sole parti in ambito, con le stesse parole dell'utente (uguale all'originale se è tutta in ambito, vuota se è tutta fuori ambito).
+- Le parti fuori ambito si prendono solo dall'ultimo messaggio dell'utente: quelle dei turni precedenti sono già state gestite e non vanno ripetute. Se l'ultimo messaggio non chiede nulla fuori ambito, parti_fuori_ambito è una lista vuota."""
 
 
 class Classificazione(BaseModel):
-    """Esito del router: il motivo viene prima, così il modello ragiona prima di scegliere."""
+    """Esito del router: il motivo viene prima, così il modello ragiona prima di scegliere.
+
+    parti_fuori_ambito e domanda_in_ambito servono al revisore nelle domande miste (specs §18.4).
+    """
 
     motivo: str = Field(min_length=1)
+    # Obbligatorie, senza valore predefinito: con un default lo schema JSON le renderebbe facoltative.
+    parti_fuori_ambito: list[str]
+    domanda_in_ambito: str
     categoria: Literal["conversazione", "fuori_ambito"]
+
+
+class DomandaMista(NamedTuple):
+    """Domanda ridotta alle parti in ambito e parti escluse, da mostrare al revisore."""
+
+    domanda_in_ambito: str
+    parti_fuori_ambito: list[str]
+
+
+def _parole(testo: str) -> list[str]:
+    """Le parole del testo in minuscolo, senza punteggiatura né spazi in più."""
+    return re.findall(r"\w+", testo.lower())
+
+
+def domanda_mista(esito: Classificazione, domanda_utente: str) -> DomandaMista | None:
+    """La riduzione della domanda se è mista (in ambito con parti fuori ambito); altrimenti None.
+
+    Se la domanda ridotta coincide con quella dell'utente non è stato escluso nulla: le parti
+    «fuori ambito» vengono da un turno precedente (misura g8, specs §17.4) e la domanda non è mista.
+    """
+    fuori = [parte.strip() for parte in esito.parti_fuori_ambito if parte.strip()]
+    domanda = " ".join(esito.domanda_in_ambito.split())
+    if esito.categoria != CONVERSAZIONE or not fuori or not domanda:
+        return None
+    if _parole(domanda) == _parole(domanda_utente):
+        return None
+    return DomandaMista(domanda, fuori)
 
 
 def messaggi_per_router(messaggi: list[AnyMessage], ambito: str) -> list[BaseMessage]:

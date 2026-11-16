@@ -5,13 +5,18 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from assistente.config import Config
 from assistente.modello import RAGIONAMENTO_DISATTIVATO
+from pydantic import ValidationError
+
 from assistente.router import (
     ISTRUZIONI_ROUTER,
+    Classificazione,
+    DomandaMista,
     classifica,
+    domanda_mista,
     crea_router,
     messaggi_per_router,
 )
-from finti import FUORI, RouterFinto
+from finti import FUORI, IN_AMBITO, MISTA, RouterFinto
 
 CONFIG = Config(
     lm_base_url="http://localhost:1234/v1",
@@ -107,3 +112,67 @@ def test_crea_router_usa_config():
     assert chat.max_retries == 0
     assert chat.extra_body == RAGIONAMENTO_DISATTIVATO
     assert "tools" not in router.first.kwargs
+
+
+# --- domande miste (specs §17/§18.4, V2c) ---
+
+
+def test_schema_ordine_campi():
+    assert list(Classificazione.model_fields) == ["motivo", "parti_fuori_ambito", "domanda_in_ambito", "categoria"]
+
+
+def test_schema_campi_nuovi_obbligatori():
+    with pytest.raises(ValidationError):
+        Classificazione(motivo="x", categoria="conversazione")
+    schema = Classificazione.model_json_schema()
+    assert set(schema["required"]) == {"motivo", "parti_fuori_ambito", "domanda_in_ambito", "categoria"}
+
+
+def test_istruzioni_chiedono_le_parti():
+    assert "parti_fuori_ambito" in ISTRUZIONI_ROUTER
+    assert "domanda_in_ambito" in ISTRUZIONI_ROUTER
+    assert "stesse parole" in ISTRUZIONI_ROUTER
+
+
+def test_istruzioni_parti_solo_dall_ultimo_messaggio():
+    # Misura g7: dopo una domanda mista il router ripeteva le parti escluse del turno prima.
+    testo = ISTRUZIONI_ROUTER.lower()
+    assert "solo dall'ultimo messaggio" in testo
+    assert "turni precedenti" in testo
+
+
+def test_domanda_mista_estrae_la_riduzione():
+    assert domanda_mista(MISTA, "Che ore sono a Tokyo? E dammi la ricetta della pizza") == DomandaMista("Che ore sono a Tokyo?", ["dammi la ricetta della pizza"])
+
+
+def _esito(parti, domanda, categoria="conversazione"):
+    return Classificazione(motivo="m", parti_fuori_ambito=parti, domanda_in_ambito=domanda, categoria=categoria)
+
+
+@pytest.mark.parametrize("esito", [
+    IN_AMBITO,                                             # nessuna parte fuori ambito
+    FUORI,                                                 # tutta fuori ambito
+    _esito(["ricetta"], "che ore sono?", "fuori_ambito"),  # categoria fuori ambito
+    _esito(["", "   "], "che ore sono?"),                  # parti vuote
+    _esito(["ricetta"], "  "),                             # domanda ridotta vuota
+])
+def test_domanda_mista_none_se_non_mista(esito):
+    assert domanda_mista(esito, "che ore sono? e la ricetta?") is None
+
+
+@pytest.mark.parametrize("domanda", [
+    "Converti 3,7 km in miglia",
+    "converti 3,7 KM in miglia!",
+    "  Converti   3,7 km\nin miglia?  ",
+])
+def test_domanda_mista_none_se_la_riduzione_coincide_con_la_domanda(domanda):
+    # Misura g8: il router ripeteva la parte esclusa del turno prima su una domanda tutta in ambito.
+    esito = _esito(["consigliami un film"], "Converti 3,7 km in miglia.")
+    assert domanda_mista(esito, domanda) is None
+
+
+def test_domanda_mista_pulisce_spazi_e_parti_vuote():
+    esito = _esito([" ricetta ", "", "barzelletta"], "  che ore\n sono?  ")
+    assert domanda_mista(esito, "che ore sono? ricetta e barzelletta") == DomandaMista(
+        "che ore sono?", ["ricetta", "barzelletta"]
+    )

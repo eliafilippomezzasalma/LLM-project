@@ -1013,6 +1013,29 @@ START → router ──(conversazione, o router non valido)──→ agente ⇄ 
   lo segnala con un WARNING (§17.7). Il rifiuto avviene solo con una categoria valida
   `fuori_ambito`.
 - Il prompt del router si affina con le misure (§17.9), al massimo tre giri, tenendo il migliore.
+- **Parti della domanda (aggiunto il 2026-11-15, per il revisore, §18.4 «Domande miste»):** lo
+  schema ha due campi in più, obbligatori, tra `motivo` e `categoria` (ordine: `motivo`,
+  `parti_fuori_ambito`, `domanda_in_ambito`, `categoria`):
+  - `parti_fuori_ambito`: lista delle parti della richiesta fuori ambito (vuota se non ce ne sono);
+  - `domanda_in_ambito`: la richiesta riscritta con le sole parti in ambito, con le parole
+    dell'utente (uguale all'originale se è tutta in ambito, vuota se è tutta fuori ambito).
+  La classificazione non cambia: decide sempre e solo `categoria`. Misurato prima di adottarli: 12/12
+  domande del tutto fuori ambito restano `fuori_ambito` (compreso il seguito «e quella
+  dell'amatriciana?»).
+- **Parti solo dall'ultimo messaggio (correzione del 2026-11-16, dopo la misura g7):** nei turni
+  subito dopo una domanda mista il router ripeteva le parti escluse del turno precedente (3 false
+  «domande miste» su 38 turni: festività, giorni dal 1° gennaio, «Converti 3,7 km in miglia»), e una
+  prova reale sul seguito «e in piedi?» falliva 2 volte su 3. In fondo a `ISTRUZIONI_ROUTER` si
+  aggiunge: «Le parti fuori ambito si prendono solo dall'ultimo messaggio dell'utente: quelle dei
+  turni precedenti sono già state gestite e non vanno ripetute. Se l'ultimo messaggio non chiede
+  nulla fuori ambito, parti_fuori_ambito è una lista vuota.» Dopo la correzione: 10/10 (5 ripetizioni
+  × 2 casi).
+- **Controllo nel codice (deciso dall'utente il 2026-11-16, dopo la misura g8):** con la riga sopra
+  restava 1 falsa «domanda mista» su 19 turni («Converti 3,7 km in miglia» subito dopo una domanda
+  con un film). `domanda_mista(esito, domanda_utente)` riceve anche il testo dell'ultima domanda e
+  restituisce None se la domanda ridotta coincide con quella dell'utente, confrontando le parole in
+  minuscolo senza punteggiatura né spazi: se non è stato escluso nulla, la domanda non è mista e il
+  revisore vede la domanda originale. Regola fissa, non dipende dal modello.
 
 ### 17.5 Configurazione (decisa dall'utente: variabili d'ambiente in `config.py`)
 
@@ -1039,6 +1062,8 @@ START → router ──(conversazione, o router non valido)──→ agente ⇄ 
 - Router: una riga per domanda con categoria, motivo e destinazione, per esempio
   `INFO router: categoria=conversazione motivo="…" -> agente` oppure `-> rifiuto`.
 - Router non valido: `WARNING router: risposta non valida (…) -> agente`.
+- Domanda mista (2026-11-15, §18.4): una seconda riga
+  `INFO router: domanda mista: al revisore solo "…" (escluse: "…; …")`.
 - Agente: **una riga INFO a ogni esecuzione** del nodo `agente` (per esempio
   `INFO agente: chiamata 1`), così il log dimostra quando l'agente gira e quando no. Cambia
   quindi la regola di §6.7 «una domanda che non usa lo strumento non produce log».
@@ -1125,3 +1150,309 @@ START → router ──(conversazione, o router non valido)──→ agente ⇄ 
 - Testo delle istruzioni del router e degli esempi in `.env.example`, da affinare con le misure.
 - Formato esatto delle righe di log, purché contengano quanto richiesto in §17.7.
 - Come si riduce la cronologia per il router, purché rispetti §17.4.
+
+## 18. Revisore della risposta: secondo nodo LLM — aggiunto il 2026-11-14
+
+Stato: implementata (2026-11-14); piano: `docs/superpowers/plans/2026-11-14-revisore-risposta.md`;
+misure nel README («Misure del revisore»). Si parte dal codice del commit `96d46a2` (router §17 e
+correzioni successive), verificato prima di cominciare. Indipendente dalla §16 (bozza, non implementata).
+
+### 18.1 Intento
+
+Secondo passo dell'evoluzione dell'assistente in un grafo con **due nodi LLM** (il primo è il
+router, §17). Testo del compito (dall'utente):
+
+> Aggiungere un nodo revisore che controlla che la risposta sia coerente con la domanda.
+> L'obiettivo è far sì che una risposta incompleta o fuori tema torni all'agente con il motivo,
+> finché non è coerente o si raggiunge il limite.
+
+Da realizzare (dall'utente):
+1. nodo revisore che riceve la domanda dell'utente e la risposta proposta dall'agente;
+2. output strutturato: coerente (sì o no) e motivo;
+3. se non coerente, il motivo entra nella cronologia come indicazione per l'agente;
+4. limite di revisioni nello stato: al limite si restituisce l'ultima risposta e lo si segnala
+   nei log.
+
+Regola di lavoro dell'utente: ogni passo riparte dal precedente funzionante e verificato, con le
+evidenze richieste.
+
+### 18.2 Che cosa giudica il revisore (deciso dall'utente)
+
+Una risposta proposta è **coerente** solo se tutte queste condizioni valgono:
+- **completa:** risponde a tutte le parti della domanda (una domanda in due parti con una sola
+  parte risolta è non coerente);
+- **in tema:** risponde alla domanda posta, letta nel contesto della conversazione (un seguito
+  come «e a Roma?» si giudica rispetto alla domanda precedente);
+- **fedele ai risultati degli strumenti:** i valori riportati sono quelli restituiti dagli
+  strumenti del turno, senza valori cambiati o inventati;
+- **nessun valore a mente:** un valore che andava ottenuto da uno strumento (ora, conversione,
+  calcolo, data, conteggio di giorni) ma non viene da nessun risultato di strumento è motivo di
+  rifiuto, **anche se il valore è giusto** (regola «sempre lo strumento», vedi §15.10).
+- *Scelta mia:* un valore già dato in un turno precedente e ripetuto tale e quale non è «a
+  mente»; un valore nuovo derivato da esso (per esempio da giorni a settimane) sì.
+- *Scelta mia:* saluti, ringraziamenti, «cosa sai fare?» e risposte che spiegano un rifiuto o un
+  errore di uno strumento non contengono valori da verificare: si giudicano solo per completezza
+  e tema.
+- **Domande miste (deciso dall'utente):** il revisore conosce l'ambito (`AMBITO_ASSISTENTE`, lo
+  stesso testo del router, §17.5) e **ignora le parti fuori ambito**: per «converti 5 miglia in
+  km e dammi una ricetta» una risposta che tratta solo la conversione è coerente. Il revisore non
+  deve mai spingere l'agente a rispondere a una parte fuori ambito. Come si ottiene: §18.4
+  «Domande miste».
+- *Scelta mia:* il revisore giudica il testo dell'agente prima che `Sessione` aggiunga la nota
+  non normativa di `compute_deadline`; non deve pretendere la nota.
+
+Il revisore **non** sceglie strumenti, **non** riscrive la risposta e **non** risponde
+all'utente: dà solo il giudizio e il motivo.
+
+### 18.3 Grafo
+
+Percorso principale (dall'utente): `START → router → agente → revisore → END`. Con gli archi
+esistenti:
+
+```
+START → router ──(fuori_ambito)──→ rifiuto → END
+              └─(conversazione o router non valido)──→ agente ⇄ strumenti
+                                                        │ (risposta finale)
+                                                        ▼
+                                                    revisore ──(coerente, revisore non valido,
+                                                        │       o limite revisioni)──→ END
+                                                        └─(non coerente, sotto il limite)──→ agente
+```
+
+- **revisore** (nuovo, LLM): si esegue quando l'agente dà una **risposta finale** (nessuna
+  tool_call). L'instradamento dopo l'agente diventa: strumenti se li chiede e c'è ancora passo;
+  revisore se la risposta è finale; fine se il limite degli strumenti è raggiunto, senza passare
+  dal revisore:
+  - al **primo tentativo** del turno (nessuna risposta proposta prima): come oggi,
+    `LimitePassaggiRaggiunto`;
+  - in un **tentativo dopo una revisione** (deciso dall'utente): si restituisce l'**ultima
+    risposta proposta** (quella rifiutata) con `WARNING revisore: limite degli strumenti nel
+    tentativo dopo la revisione, restituita l'ultima risposta`. Serve conservare nello stato
+    l'ultima risposta proposta.
+- **arco condizionale** dopo il revisore: funzione esplicita e testabile a parte (come
+  `instrada` e `dopo_router`) che restituisce `agente` o `fine`.
+- Il **rifiuto** del router non passa dal revisore.
+- *Scelta mia:* il conteggio dei passaggi verso gli strumenti (`passi_strumento`) **si azzera a
+  ogni ritorno dal revisore**: ogni tentativo dell'agente ha i suoi `MAX_TOOL_STEPS`, altrimenti
+  dopo un rifiuto l'agente potrebbe non avere più passaggi per chiamare lo strumento mancante.
+- Il limite di ricorsione di LangGraph si alza di quanto serve (fino a `MAX_REVISIONI + 1`
+  tentativi, ciascuno con i suoi passaggi agli strumenti e un passaggio dal revisore), così non
+  scatta prima dei nostri limiti.
+- `costruisci_grafo` riceve il revisore come dipendenza e il limite di revisioni, così i test
+  iniettano un revisore finto.
+
+### 18.4 Il revisore
+
+- **Stesso modello** di LM Studio, **senza strumenti collegati**, ragionamento disattivato,
+  timeout proprio di 60 s e `max_retries=0`, come il router (§17.4).
+- **Output strutturato** (dall'utente): classe Pydantic con due campi, **`motivo` prima di
+  `coerente`** (*scelta mia*, per lo stesso effetto misurato sul router: il modello ragiona
+  prima di decidere):
+  - `motivo`: frase breve in italiano; se non coerente, dice che cosa manca o che cosa è
+    sbagliato, in modo utilizzabile dall'agente;
+  - `coerente`: booleano.
+  `with_structured_output`, metodo `json_schema`, come il router.
+- **Regola violata (deciso dall'utente il 2026-11-14, contro i falsi rifiuti pignoli):** lo schema
+  ha un terzo campo `regola`, **tra `motivo` e `coerente`**, con valori
+  `Literal["nessuna", "completezza", "contraddizione", "valore_a_mente"]`, cioè le tre regole di
+  rifiuto del prompt (parte in ambito senza risposta; valore che contraddice uno strumento; valore
+  non ottenuto da uno strumento). La risposta torna all'agente **solo se `coerente` è falso e
+  `regola` non è `nessuna`**. Un `coerente` falso con `regola = nessuna` conta come approvazione e
+  lo si segnala nel log (§18.7); un `coerente` vero con una regola indicata resta un'approvazione.
+- **Che cosa vede (deciso dall'utente: anche gli scambi precedenti, come contesto):**
+  - un messaggio di sistema proprio con le istruzioni di revisione (nel codice) e il testo
+    dell'ambito (dalla configurazione, come il router);
+  - gli **scambi precedenti** della sessione ridotti a domande e risposte in testo (come il
+    router), senza il prompt di sistema dell'agente;
+  - del **turno corrente**: la domanda, le chiamate agli strumenti con argomenti e risultati
+    (**dall'utente: controlla anche i risultati dei tool**), le eventuali indicazioni di
+    revisioni precedenti dello stesso turno e la risposta proposta.
+  *Scelta mia:* il turno corrente si passa al revisore in forma leggibile (per esempio un unico
+  messaggio che elenca chiamate, risultati e risposta proposta), non come tool_call native,
+  perché il revisore non ha strumenti collegati. La forma esatta è lasciata al costruttore.
+- **Numeri in formato italiano (deciso dall'utente il 2026-11-14, dopo le misure):** nel turno
+  presentato al revisore i numeri decimali dei **risultati degli strumenti** si scrivono con la
+  virgola (`49.7097` → `49,7097`), come li scrive l'agente nelle risposte; date (`2026-11-14`),
+  orari (`15:42:19`), argomenti delle chiamate e risposta proposta restano invariati. Il prompt del
+  revisore non parla più di virgola e punto. Motivo: con il punto nei risultati il revisore
+  respingeva risposte corrette scritte con la virgola, anche quando il prompt diceva che erano
+  equivalenti (falsi rifiuti nelle misure e in due test reali).
+- **Revisore non valido (fail-open, *scelta mia* confermata dall'utente):** eccezione, timeout o
+  output non conforme → la risposta proposta passa all'utente; `WARNING revisore: risposta non
+  valida (…) -> fine`.
+- Il prompt del revisore si affina con le misure (§18.9), al massimo tre giri, tenendo il
+  migliore; verificare anche su domande diverse dagli esempi del prompt.
+- **Domande miste (deciso dall'utente il 2026-11-15, variante «V2c»):** nella misura g6 il revisore
+  ha preteso la parte fuori ambito in 3 domande miste su 3 (anti-obiettivo §18.12), nonostante il
+  prompt dicesse «non chiederla mai». Per questo il revisore **non vede più la parte fuori ambito**:
+  - il router scrive le parti fuori ambito e la domanda ridotta alle parti in ambito (§17.4);
+  - se la domanda è `conversazione`, ha almeno una parte fuori ambito non vuota e la domanda ridotta
+    non è vuota, il turno presentato al revisore comincia con
+    `Domanda dell'utente (solo le parti in ambito): <domanda ridotta>` e
+    `Parti fuori ambito già escluse (l'assistente fa bene a non rispondere, non chiederle mai): a; b`
+    al posto di `Domanda dell'utente: <domanda>`; in tutti gli altri casi (domanda tutta in ambito,
+    router non valido) il revisore vede la domanda originale, così i seguiti non vengono riscritti;
+  - la riduzione sta nello stato del grafo (`mista`), azzerata dal router a ogni turno, e vale per
+    tutte le revisioni del turno;
+  - **l'agente non cambia:** vede sempre la domanda intera e spiega lui che la parte fuori ambito
+    non rientra nei suoi compiti.
+  Varianti provate prima (spike su 14 casi × 2, nessuna modifica al progetto): prompt attuale 19/28;
+  revisore che divide da sé le parti 26/28 (approva un conteggio di giorni a mente); router che divide
+  + nota 26/28 (indulgente sulle risposte incomplete); revisore con la sola domanda ridotta 26/28
+  (sbaglia i seguiti riscritti dal router). V2c unisce le ultime due solo quando la domanda è
+  davvero mista. Misura con l'app vera: README, «Misure del revisore» (g7). Dopo g7 il router prende
+  le parti fuori ambito solo dall'ultimo messaggio, e una domanda ridotta uguale all'originale non
+  conta come mista (§17.4, 2026-11-16; misura g8 nel README).
+
+### 18.5 Indicazione all'agente (dall'utente: il motivo entra nella cronologia)
+
+- Se la risposta non è coerente, ai messaggi del turno si aggiungono, nell'ordine, la
+  **risposta proposta** dell'agente (già presente) e un **messaggio di indicazione** con il
+  motivo del revisore; poi si torna all'agente, che vede tutto il turno e può chiamare gli
+  strumenti mancanti.
+- *Scelta mia:* l'indicazione è un `HumanMessage` con un prefisso riconoscibile (per esempio
+  `[Revisione] La risposta precedente non va bene: <motivo>. Correggila.`), non un
+  `SystemMessage`: il modello di chat di Qwen può rifiutare messaggi di sistema a metà
+  conversazione. **Da verificare per primo** con una chiamata reale; se il formato scelto dà
+  errore o l'agente non lo segue, si riporta all'utente prima di proseguire.
+- **Con la regola (2026-11-14):** l'indicazione nomina anche la regola violata, nella forma
+  `[Revisione] Regola violata: <regola>. La risposta precedente non va bene: <motivo> Correggila: …`.
+- **Solo per il turno corrente** (confermato dall'utente): alla fine del turno, in cronologia di
+  sessione entrano come oggi solo la domanda, le chiamate di `STRUMENTI_IN_CRONOLOGIA` e la
+  risposta finale. Risposte rifiutate e indicazioni restano solo nei log.
+- *Scelta mia:* le chiamate agli strumenti conservate in cronologia sono quelle di tutti i
+  tentativi del turno (regola di §6.2 applicata a tutti i passaggi intermedi).
+
+### 18.6 Limite di revisioni (dall'utente: nello stato)
+
+- Un campo dello stato conta le revisioni con esito «non coerente» nel turno; parte da 0 a ogni
+  domanda.
+- Configurazione: `MAX_REVISIONI`, intero ≥ 0, predefinito **2** (*scelta mia*, confermata
+  dall'utente): al massimo 2 rimandi all'agente, quindi al massimo 3 risposte proposte e 3
+  revisioni per turno. Valore non valido → errore all'avvio, come `MAX_TOOL_STEPS`. Con 0 il
+  revisore giudica una volta e la risposta passa comunque.
+- **Aggiornamento (deciso dall'utente il 2026-11-14):** predefinito **3**, quindi al massimo 3
+  rimandi, 4 risposte proposte e 4 revisioni per turno (anche nel `.env` locale e in `.env.example`).
+- **Al limite:** si restituisce l'**ultima risposta proposta** e si scrive nel log
+  `WARNING revisore: limite di N revisioni raggiunto, restituita l'ultima risposta` (dall'utente:
+  segnalarlo nei log). Nessun messaggio aggiuntivo all'utente (*scelta mia*).
+
+### 18.7 Log (livello INFO salvo dove indicato)
+
+- Revisore, una riga per revisione, nello stesso stile del router:
+  `INFO revisore: coerente=no motivo="…" -> agente (revisione 1/2)` oppure
+  `INFO revisore: coerente=sì motivo="…" -> fine`.
+- Con la regola (2026-11-14) la riga riporta anche la regola, per esempio
+  `INFO revisore: coerente=no regola=completezza motivo="…" -> agente (revisione 1/3)`; un rifiuto
+  senza regola si scrive `INFO revisore: coerente=no regola=nessuna motivo="…" -> fine (rifiuto senza regola, trattato come coerente)`.
+- Limite: il WARNING di §18.6. Revisore non valido: il WARNING di §18.4.
+- DEBUG: messaggi inviati al revisore.
+- Le righe esistenti di router, agente e rifiuto restano; `agente: chiamata n` continua a
+  contare i passaggi del tentativo corrente.
+
+### 18.8 Evidenze richieste
+
+Dall'utente:
+1. **Domanda in due parti con risposta parziale:** rifiuto motivato del revisore e nuova risposta
+   completa (log e risposta finale).
+2. **Risposta coerente:** approvata al primo passaggio (una sola riga `revisore:`).
+3. **Limite rispettato con un revisore simulato che rifiuta sempre:** esattamente
+   `MAX_REVISIONI + 1` revisioni, restituita l'ultima risposta, WARNING nel log.
+
+*Scelta mia, dalla decisione dell'utente su §18.2:*
+4. **Valore a mente:** una risposta con un valore non ottenuto da uno strumento viene rifiutata.
+
+*Scelta mia, su come produrle:* il modello reale potrebbe rispondere subito per intero, e allora
+le evidenze 1 e 4 non comparirebbero. Per questo si producono a due livelli:
+- **test automatici** con agente e revisore finti, che dimostrano l'instradamento;
+- **test reali** in `test_reale.py` con un **agente finto** che dà la risposta parziale (1) o il
+  valore a mente (4) e il **revisore vero** su LM Studio. Dimostrano che il modello riconosce i
+  due casi. Per la 1, il secondo tentativo usa l'agente vero, che deve dare la risposta completa;
+- inoltre si osserva l'app vera via stdin, e si riportano i casi in cui l'agente reale dà
+  spontaneamente risposte parziali o valori a mente.
+
+### 18.9 Test e verifiche
+
+- **Automatici (agente e revisore finti, nessun LM Studio):**
+  - risposta coerente → una revisione, fine, risposta invariata;
+  - non coerente poi coerente → indicazione con il motivo nei messaggi del turno, agente
+    richiamato, risposta finale = seconda risposta;
+  - revisore che rifiuta sempre → `MAX_REVISIONI + 1` revisioni, ultima risposta restituita,
+    WARNING; anche con `MAX_REVISIONI=0`;
+  - revisore che solleva un'eccezione o dà output non valido → risposta passa, WARNING;
+  - dopo un rifiuto l'agente può chiamare gli strumenti (contatore azzerato);
+  - il revisore riceve scambi precedenti, chiamate e risultati del turno e risposta proposta,
+    non il prompt di sistema dell'agente;
+  - rifiuto del router e limite degli strumenti non passano dal revisore;
+  - limite degli strumenti al primo tentativo → `LimitePassaggiRaggiunto`; nel tentativo dopo
+    una revisione → ultima risposta proposta e WARNING;
+  - domanda mista: il revisore riceve il testo dell'ambito;
+  - domanda mista (V2c): schema del router con i campi nuovi nell'ordine giusto e obbligatori;
+    `domanda_mista` restituisce la riduzione solo per una vera domanda mista; il revisore vede la
+    domanda ridotta e le parti escluse, l'agente la domanda intera; riga di log; riduzione
+    conservata dopo una revisione e azzerata al turno successivo; le istruzioni del router chiedono
+    le parti fuori ambito solo dall'ultimo messaggio; nessuna riduzione se la domanda ridotta
+    coincide con quella dell'utente (maiuscole, punteggiatura e spazi ignorati), anche nel grafo;
+  - cronologia di sessione senza risposte rifiutate né indicazioni;
+  - funzione dell'arco dopo il revisore testata da sola; configurazione di `MAX_REVISIONI`;
+  - test esistenti aggiornati al grafo nuovo, tutti verdi.
+- **Reali (LM Studio, `RUN_REAL_TESTS=1`):** almeno la domanda in due parti e una risposta
+  coerente in `test_reale.py`; i test reali esistenti restano verdi. Per V2c: il router vero estrae
+  le parti di una domanda mista; catena vera router → revisore che approva la risposta giusta a una
+  domanda mista; dopo una domanda mista il router non ripete le parti escluse nella domanda seguente
+  (festività, seguito «e in piedi?»).
+- **Primo controllo reale:** output strutturato del revisore e formato dell'indicazione (§18.5).
+- **Misure (dal controllore, app vera via stdin):** domande semplici, in due parti, seguiti,
+  saluti, per ogni strumento, ripetute in più sessioni. Si contano: risposte coerenti rifiutate
+  (falsi rifiuti, il più grave perché allunga i tempi e può peggiorare la risposta), risposte
+  parziali o con valori a mente approvate, limiti raggiunti, output non validi, tempi per turno.
+  Numeri all'utente e nel README; nessuna soglia bloccante.
+- **Contesto:** misurare i token della richiesta al revisore (cronologia + turno) rispetto al
+  contesto di 8192 di LM Studio; se serve, riportarlo all'utente prima di ridurre il contesto.
+- **Regressione:** le domande della regressione di §17.9 prima (su `96d46a2`) e dopo; criterio:
+  esiti non peggiori.
+- **Docker:** `docker compose build`, poi una domanda in due parti nel container.
+- **Chi misura:** il controllore in sessione, numeri di prima mano.
+
+### 18.10 Obiettivi
+
+- Nodo revisore LLM con output strutturato (motivo, coerente) dopo la risposta finale
+  dell'agente.
+- Rimando all'agente con il motivo, fino a coerenza o limite.
+- Limite di revisioni nello stato, configurabile, con segnalazione nei log.
+- Le evidenze di §18.8, prodotte e riportate.
+
+### 18.11 Non-obiettivi
+
+- Un revisore che riscrive la risposta o risponde lui all'utente.
+- Un revisore con strumenti, o che ricalcola i valori per controllarli.
+- Revisione del rifiuto fisso del router.
+- Un modello diverso per il revisore o una configurazione del modello separata.
+- Persistenza della cronologia.
+
+### 18.12 Anti-obiettivi (sarebbe un fallimento anche se «funziona»)
+
+- Risposte coerenti rifiutate di frequente (turni più lenti senza guadagno).
+- Un ciclo che non termina, o che termina per il limite di ricorsione invece che per il nostro.
+- Risposte rifiutate o indicazioni del revisore che restano nella cronologia di sessione o
+  arrivano all'utente.
+- Un guasto del revisore che blocca la risposta.
+- Un revisore che spinge l'agente a rispondere a una parte fuori ambito.
+- Un errore all'utente quando esisteva già una risposta proposta.
+- Il router, l'agente e gli strumenti che cambiano comportamento oltre il nuovo instradamento.
+
+### 18.13 Vincoli di lavoro
+
+- Solo in `lezione_4/`, sul branch `feature/nuove-funzionalita`; la §16 non committata resta
+  intatta e fuori da questo lavoro.
+- **Commit e push solo su richiesta esplicita dell'utente.**
+- Aggiornare `CLAUDE.md` (struttura e obiettivo), `README.md` (variabile nuova, log, misure), la
+  descrizione del grafo in testa a `grafo.py` e `.env.example`.
+
+### 18.14 Lasciato al costruttore
+
+- Nomi interni (schema, funzioni, campi dello stato), modulo nuovo (per esempio
+  `assistente/revisore.py`) o dentro `grafo.py`.
+- Testo delle istruzioni del revisore e dell'indicazione, da affinare con le misure.
+- Forma con cui il turno corrente viene presentato al revisore, purché contenga quanto in §18.4.
+- Formato esatto delle righe di log, purché contengano quanto in §18.7.

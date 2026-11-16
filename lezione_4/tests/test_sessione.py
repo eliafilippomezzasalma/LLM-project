@@ -5,10 +5,12 @@ from langchain_core.tools import StructuredTool
 from assistente.grafo import costruisci_grafo
 from assistente.nota import RIGA_NOTA, NotaNonNormativa, con_nota
 from assistente.orologio import crea_orologio
+from assistente.revisore import PREFISSO_INDICAZIONE, Giudizio
 from assistente.sessione import PROMPT_SISTEMA, LimitePassaggiRaggiunto, Sessione
 from assistente.strumenti import crea_registro
 from finti import (
-    FUORI, IN_AMBITO, RIFIUTO, ModelloCheFallisce, ModelloFinto, RouterFinto, chiede_ora, grafo_in_ambito,
+    APPROVATA, FUORI, IN_AMBITO, RESPINTA, RIFIUTO, ModelloCheFallisce, ModelloFinto, RevisoreFinto, RouterFinto,
+    chiede_ora, grafo_in_ambito,
 )
 
 REGISTRO = crea_registro([crea_orologio()])
@@ -241,7 +243,8 @@ def _sessione_con_nota(risposte, max_passi=3, router=None):
         grafo = grafo_in_ambito(modello, registro, max_passi=max_passi)
     else:
         grafo = costruisci_grafo(
-            modello, registro, max_passi, router=router, ambito="ambito di prova", messaggio_rifiuto=RIFIUTO
+            modello, registro, max_passi, router=router, ambito="ambito di prova", messaggio_rifiuto=RIFIUTO,
+            revisore=RevisoreFinto([APPROVATA]), max_revisioni=2,
         )
     return Sessione(grafo, nota), nota, modello
 
@@ -302,7 +305,8 @@ def test_nota_ripresentata_se_il_turno_fallisce():
 def test_rifiuto_in_cronologia_senza_motivo():
     modello = ModelloFinto([AIMessage("non deve parlare")])
     grafo = costruisci_grafo(
-        modello, REGISTRO, 3, router=RouterFinto([FUORI]), ambito="ambito di prova", messaggio_rifiuto=RIFIUTO
+        modello, REGISTRO, 3, router=RouterFinto([FUORI]), ambito="ambito di prova", messaggio_rifiuto=RIFIUTO,
+        revisore=RevisoreFinto([APPROVATA]), max_revisioni=2,
     )
     sessione = Sessione(grafo)
     assert sessione.chiedi("ricetta della carbonara") == RIFIUTO
@@ -318,3 +322,74 @@ def test_rifiuto_dopo_una_scadenza_senza_nota():
     )
     sessione.chiedi("Scadenza tra 3 giorni?")
     assert sessione.chiedi("ricetta della carbonara") == RIFIUTO
+
+
+# --- revisore (specs §18.5): risposte rifiutate e indicazioni restano fuori dalla cronologia ---
+
+
+def _chiamate_senza_risposta(cronologia):
+    risposte = {m.tool_call_id for m in cronologia if isinstance(m, ToolMessage)}
+    return [c for m in cronologia if isinstance(m, AIMessage) for c in m.tool_calls if c["id"] not in risposte]
+
+
+def test_revisione_fuori_dalla_cronologia():
+    router = RouterFinto([IN_AMBITO])
+    modello = ModelloFinto([AIMessage("parte 1"), AIMessage("parte 1 e parte 2"), AIMessage("Prego.")])
+    grafo = costruisci_grafo(
+        modello, REGISTRO, 3, router=router, ambito="ambito di prova", messaggio_rifiuto=RIFIUTO,
+        revisore=RevisoreFinto([RESPINTA, APPROVATA]), max_revisioni=2,
+    )
+    sessione = Sessione(grafo)
+    assert sessione.chiedi("Dimmi la parte 1 e la parte 2") == "parte 1 e parte 2"
+    assert _contenuto(sessione.cronologia) == [
+        (SystemMessage, PROMPT_SISTEMA), (HumanMessage, "Dimmi la parte 1 e la parte 2"), (AIMessage, "parte 1 e parte 2"),
+    ]
+    assert not any(PREFISSO_INDICAZIONE in str(m.content) for m in sessione.cronologia)
+    assert sessione.chiedi("Grazie") == "Prego."
+    # al turno dopo router e agente ricevono solo domande e risposte finali
+    assert [m.content for m in router.chiamate[1][1:]] == [
+        "Dimmi la parte 1 e la parte 2", "parte 1 e parte 2", "Grazie",
+    ]
+    assert [m.content for m in modello.chiamate[-1]] == [
+        PROMPT_SISTEMA, "Dimmi la parte 1 e la parte 2", "parte 1 e parte 2", "Grazie",
+    ]
+
+
+def test_chiamata_senza_risposta_non_conservata():
+    # Limite degli strumenti nel tentativo dopo la revisione: l'ultima chiamata non è stata
+    # eseguita e non deve entrare in cronologia senza il suo ToolMessage (l'API la rifiuterebbe).
+    modello = ModelloFinto([AIMessage("prima"), chiede_ora("Europe/Rome", "c1"), chiede_ora("Asia/Tokyo", "c2")])
+    sessione = Sessione(grafo_in_ambito(modello, REGISTRO, max_passi=1, revisore=RevisoreFinto([RESPINTA])))
+    assert sessione.chiedi("Che ore sono?") == "prima"
+    assert _chiamate_senza_risposta(sessione.cronologia) == []
+    chiamate = [c["id"] for m in sessione.cronologia if isinstance(m, AIMessage) for c in m.tool_calls]
+    assert chiamate == ["c1"]
+    assert sessione.cronologia[-1].content == "prima"
+
+
+def test_chiamate_di_tutti_i_tentativi_conservate():
+    giorni = StructuredTool.from_function(
+        lambda from_date, to_date: "41 giorni", name="days_between", description="finto"
+    )
+    registro = crea_registro([crea_orologio(), giorni])
+    tra_date = ("days_between", {"from_date": "2026-11-14", "to_date": "2026-12-25"}, "d1")
+    modello = ModelloFinto([
+        chiede_ora("Europe/Rome", "o1"), AIMessage("Mancano 41 giorni."), _chiede(tra_date), AIMessage("Mancano 41 giorni."),
+    ])
+    revisore = RevisoreFinto([Giudizio(motivo="giorni non presi da uno strumento", regola="valore_a_mente", coerente=False), APPROVATA])
+    sessione = Sessione(grafo_in_ambito(modello, registro, max_passi=3, revisore=revisore))
+    assert sessione.chiedi("Quanti giorni mancano a Natale?") == "Mancano 41 giorni."
+    tipi = [type(m) for m in sessione.cronologia]
+    assert tipi == [SystemMessage, HumanMessage, AIMessage, ToolMessage, AIMessage, ToolMessage, AIMessage]
+    assert [c["id"] for m in sessione.cronologia if isinstance(m, AIMessage) for c in m.tool_calls] == ["o1", "d1"]
+    assert [m.tool_call_id for m in sessione.cronologia if isinstance(m, ToolMessage)] == ["o1", "d1"]
+    assert not any(PREFISSO_INDICAZIONE in str(m.content) for m in sessione.cronologia)
+
+
+def test_errore_agente_dopo_revisione_risposta_in_cronologia():
+    modello = ModelloFinto([AIMessage("prima"), ConnectionError("giù")])
+    sessione = Sessione(grafo_in_ambito(modello, REGISTRO, revisore=RevisoreFinto([RESPINTA])))
+    assert sessione.chiedi("Che ore sono?") == "prima"
+    assert _contenuto(sessione.cronologia) == [
+        (SystemMessage, PROMPT_SISTEMA), (HumanMessage, "Che ore sono?"), (AIMessage, "prima"),
+    ]

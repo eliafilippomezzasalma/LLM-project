@@ -1,7 +1,7 @@
 # Assistente del laboratorio — lezione 4
 
 Chat da terminale in Python che conversa con un modello servito da **LM Studio** sul computer
-host. Il flusso è un grafo **LangGraph** esplicito (nodo `router` → nodo `agente` ⇄ nodo `strumenti`,
+host. Il flusso è un grafo **LangGraph** esplicito (nodo `router` → nodo `agente` ⇄ nodo `strumenti`, poi la risposta finale dell'agente → nodo `revisore`,
 oppure nodo `rifiuto`), la cronologia dura quanto la sessione e il modello può chiedere l'ora con lo
 strumento **`get_current_time`**, che richiede sempre un fuso orario IANA (es. `Asia/Tokyo`).
 Può anche convertire unità di misura con lo strumento **`convert_units`**, offerto da un server
@@ -25,7 +25,8 @@ assistente/
   strumenti.py  esecuzione sicura delle chiamate agli strumenti
   modello.py    client verso LM Studio (API compatibile OpenAI)
   router.py     router d'ambito: classifica ogni domanda (conversazione / fuori ambito)
-  grafo.py      grafo LangGraph router → agente ⇄ strumenti, oppure rifiuto, con limite di passaggi
+  revisore.py   revisore della risposta: giudica se la risposta finale è coerente con la domanda e con gli strumenti
+  grafo.py      grafo LangGraph router → agente (⇄ strumenti) → revisore, oppure rifiuto, con limite di passaggi
   sessione.py   cronologia della sessione e prompt di sistema
   terminale.py  chat da terminale (python -m assistente)
   mcp_remoto.py ponte sincrono verso un server MCP avviato via stdio
@@ -64,9 +65,10 @@ Copy-Item .env.example .env
 | `AMBITO_ASSISTENTE` | sì | vedi `.env.example` | descrizione dell'ambito: il router decide se una domanda ne fa parte |
 | `MESSAGGIO_RIFIUTO` | sì | vedi `.env.example` | risposta fissa data alle domande fuori ambito (senza chiamare l'agente) |
 | `MAX_TOOL_STEPS` | no | `3` | passaggi modello → strumenti per ogni domanda |
+| `MAX_REVISIONI` | no | `3` | quante volte il revisore può rimandare la risposta all'agente per ogni domanda: intero ≥ 0, predefinito 3; con 0 il revisore giudica una volta ma non rimanda mai all'agente (specifica in [`specs.md`](specs.md) §18) |
 | `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO` o `WARNING` |
 
-Con Docker le due variabili nuove vanno nel `.env`, come le altre.
+Con Docker le tre variabili nuove (`AMBITO_ASSISTENTE`, `MESSAGGIO_RIFIUTO`, `MAX_REVISIONI`) vanno nel `.env`, come le altre.
 
 Per vedere gli identificativi dei modelli disponibili:
 
@@ -105,6 +107,73 @@ WARNING router: risposta non valida (...) -> agente
 ```
 
 Se il router non risponde in modo valido, la domanda passa comunque all'agente (riga `WARNING`).
+
+Dopo la risposta finale dell'agente il nodo `revisore` giudica se è coerente con la domanda e con i
+risultati degli strumenti e indica la regola violata (`completezza`, `contraddizione`,
+`valore_a_mente`, oppure `nessuna`). La risposta torna all'agente solo se non è coerente **e** viola
+una regola, fino a `MAX_REVISIONI` volte, con un'indicazione nella forma
+`[Revisione] Regola violata: <regola>. La risposta precedente non va bene: <motivo> Correggila: rispondi di nuovo all'ultima domanda dell'utente.`;
+un rifiuto con `regola=nessuna` conta come approvazione e non consuma revisioni. Scrive una riga
+per giudizio, più una riga `WARNING` quando restituisce l'ultima risposta proposta o quando non
+riesce a giudicare (la risposta passa com'è):
+
+```
+INFO revisore: coerente=no regola=<regola> motivo="<motivo>" -> agente (revisione 1/3)
+INFO revisore: coerente=sì regola=<regola> motivo="<motivo>" -> fine
+INFO revisore: coerente=no regola=nessuna motivo="<motivo>" -> fine (rifiuto senza regola, trattato come coerente)
+INFO revisore: coerente=no regola=<regola> motivo="<motivo>" -> fine
+WARNING revisore: limite di <max> revisioni raggiunto, restituita l'ultima risposta
+WARNING revisore: risposta non valida (...) -> fine
+WARNING revisore: limite degli strumenti nel tentativo dopo la revisione, restituita l'ultima risposta
+WARNING revisore: errore del modello nel tentativo dopo la revisione (...), restituita l'ultima risposta
+```
+
+### Grafo con il revisore
+
+```
+router → agente ⇄ strumenti
+            ↓ (risposta finale)
+         revisore → agente (risposta rimandata, al massimo MAX_REVISIONI volte)
+            ↓
+          fine
+agente → ultima_risposta → fine (limite degli strumenti nel tentativo dopo una revisione)
+router → rifiuto → fine
+```
+
+### Misure del revisore
+
+Misure del 2026-11-14 con `qwen/qwen3.5-9b`, app vera via stdin, una sessione alla volta, 9–10 domande
+per sessione: una per strumento, domande in due parti, seguiti, saluti, «cosa sai fare?» e domande
+miste con una parte fuori ambito (ricetta, barzelletta, poesia, film). Rifiuti «giusti» e «falsi»
+giudicati leggendo log e risposte.
+
+| Prompt del revisore | Domande | Approvate al 1° passaggio | Rifiuti giusti | Falsi rifiuti | Approvazioni sbagliate | Timeout (fail-open) |
+|---|---|---|---|---|---|---|
+| iniziale | 20 | 18 | 0 | 1 (arrotondamento) | 0 | 1 |
+| ritocco 1 (arrotondamenti ammessi) | 19 | 13 | 1 | 5 (tra cui la ricetta pretesa fino al limite) | 1 (valore calcolato a mano) | 0 |
+| ritocco 2 (elenchi «motivi di rifiuto» / «non sono motivi») | 29 | 24 | 3 | 2 (ricetta pretesa fino al limite; virgola decimale) | 1 (risposta che annuncia invece di rispondere) | 0 |
+| ritocco 3 (scartato) | 27 | 20 | 2 | 5 (la ricetta finisce nella risposta) | 0 | 0 |
+| ritocco 2 + risultati degli strumenti con la virgola decimale | 19 | 14 | 0 | 5 (dettagli omessi ×2, contesto di un seguito, arrotondamento, contraddizione inventata fino al limite) | 1 (valore calcolato a mano) | 0 |
+| **definitivo:** come sopra + campo `regola` obbligatorio (rifiuto senza regola = approvazione), `MAX_REVISIONI=3` | 38 | 28 | 4 (+1 dubbio) | 5 (pignoli ×2: ringraziamento, seguito «e in piedi?»; parte fuori ambito pretesa ×3: ricetta fino al limite, poesia, mondiale) | 1 (valore calcolato a mano) | 0 |
+
+- Il ritocco 3 è stato scartato perché peggiore del 2; tre giri di ritocco al massimo, tenuto il migliore.
+- Con i risultati degli strumenti scritti con la virgola (come le risposte dell'agente) spariscono i falsi rifiuti
+  per il separatore decimale; in quella misura anche la domanda con la ricetta è stata approvata al primo passaggio.
+- Con il campo `regola` i falsi rifiuti pignoli scendono da 5 su 19 a 2 su 38; sulle stesse 19 domande
+  della misura precedente spariscono i rifiuti per secondi omessi, «oggi» senza data e arrotondamento.
+  Il modello non ha mai respinto senza indicare una regola: il guadagno viene dal dover nominare la
+  regola, non dalla rete di sicurezza.
+- Test reali del revisore con la versione definitiva: 6/6 (in un giro precedente, prima della correzione della
+  virgola, 2 falsi rifiuti su 17 test reali).
+- **Limite noto:** nelle domande miste il revisore a volte pretende la parte fuori ambito (anti-obiettivo
+  di `specs.md` §18.12), nonostante il prompt lo escluda: nella misura definitiva 3 domande miste su 3,
+  con la poesia e il mondiale finiti nella risposta. Il limite di `MAX_REVISIONI` chiude comunque il turno
+  con l'ultima risposta.
+- Regressione (15 domande di riferimento): stessi strumenti di prima, 15/15 approvate al primo passaggio.
+- Costo: il revisore aggiunge circa 25–40 s per turno e 30–60 s per ogni rimando; una richiesta al
+  revisore pesa 450–650 token (l'agente circa 3.400). Con due sessioni in parallelo il contesto di 8192
+  token di LM Studio si esaurisce (HTTP 400): le misure vanno fatte una sessione alla volta.
+
 
 ### Misure del router
 

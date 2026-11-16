@@ -7,7 +7,7 @@ La cartella del progetto è `lezione_4/`. Specifica in `specs.md`, piano in
 
 ## Struttura
 - `assistente/`: `config` (variabili d'ambiente), `log` (stderr), `orologio` (strumento),
-  `strumenti` (esecuzione delle chiamate), `modello` (client LM Studio), `router` (router d'ambito), `grafo` (LangGraph),
+  `strumenti` (esecuzione delle chiamate), `modello` (client LM Studio), `router` (router d'ambito), `revisore` (revisore della risposta), `grafo` (LangGraph),
   `sessione` (cronologia e prompt di sistema), `terminale` (chat, `python -m assistente`),
   `mcp_remoto` (ponte sincrono verso server MCP via stdio), `nota` (nota non normativa dei risultati di
   `compute_deadline`, data una sola volta per chat).
@@ -42,6 +42,8 @@ Un'applicazione da terminale in Python che conversa con un modello locale e:
   differenze tra date, festività italiane da `festivita.json`, date solo `AAAA-MM-GG`, con rifiuti in italiano;
 - classifica ogni domanda con un router d'ambito prima dell'agente: le domande fuori ambito ricevono
   una risposta fissa senza chiamare l'agente (`specs.md` §17);
+- fa rivedere la risposta finale da un revisore, che la rimanda all'agente se è parziale o con valori non
+  ricavati dagli strumenti (`specs.md` §18);
 - si avvia anche con Docker Compose.
 
 ## Confini

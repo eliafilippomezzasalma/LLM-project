@@ -11,7 +11,7 @@ BASE = {
 
 
 def test_valori_completi():
-    env = {**BASE, "MAX_TOOL_STEPS": "5", "LOG_LEVEL": "DEBUG"}
+    env = {**BASE, "MAX_TOOL_STEPS": "5", "LOG_LEVEL": "DEBUG", "MAX_REVISIONI": "4"}
     assert carica_config(env) == Config(
         lm_base_url="http://localhost:1234/v1",
         lm_model="qwen/qwen3.5-9b",
@@ -19,7 +19,22 @@ def test_valori_completi():
         log_level="DEBUG",
         ambito_assistente="orari e calcoli",
         messaggio_rifiuto="Non posso aiutarti.",
+        max_revisioni=4,
     )
+
+
+def test_max_revisioni_predefinito():
+    assert carica_config(BASE).max_revisioni == 3
+
+
+def test_max_revisioni_zero_ammesso():
+    assert carica_config({**BASE, "MAX_REVISIONI": "0"}).max_revisioni == 0
+
+
+@pytest.mark.parametrize("valore", ["-1", "due", "1.5"])
+def test_max_revisioni_non_valido(valore):
+    with pytest.raises(ErroreConfigurazione, match="MAX_REVISIONI"):
+        carica_config({**BASE, "MAX_REVISIONI": valore})
 
 
 def test_predefiniti():

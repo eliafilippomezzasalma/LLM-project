@@ -224,12 +224,13 @@ def _prepara_main(monkeypatch, convertitore, calcolatrice, scadenze):
         visto["sessione"] = sessione
 
     config = SimpleNamespace(lm_model="m", lm_base_url=URL, log_level="WARNING", max_tool_steps=3,
-                             ambito_assistente="ambito", messaggio_rifiuto="rifiuto")
+                             ambito_assistente="ambito", messaggio_rifiuto="rifiuto", max_revisioni=2)
     monkeypatch.setattr(terminale, "carica_config", lambda: config)
     monkeypatch.setattr(terminale, "configura_log", lambda livello: None)
     monkeypatch.setattr(terminale, "crea_modello",
                         lambda config, strumenti: visto.update(strumenti=strumenti) or object())
     monkeypatch.setattr(terminale, "crea_router", lambda config: "router")
+    monkeypatch.setattr(terminale, "crea_revisore", lambda config: "revisore")
     monkeypatch.setattr(terminale, "costruisci_grafo", lambda *a, **k: visto.update(grafo_kwargs=k) or object())
     monkeypatch.setattr(terminale, "esegui_chat", chat)
     monkeypatch.setattr(terminale, "collega_convertitore", lambda: convertitore)
@@ -241,7 +242,10 @@ def _prepara_main(monkeypatch, convertitore, calcolatrice, scadenze):
 def test_main_collega_il_router(monkeypatch):
     visto = _prepara_main(monkeypatch, None, None, None)
     assert terminale.main() == 0
-    assert visto["grafo_kwargs"] == {"router": "router", "ambito": "ambito", "messaggio_rifiuto": "rifiuto"}
+    assert visto["grafo_kwargs"] == {
+        "router": "router", "ambito": "ambito", "messaggio_rifiuto": "rifiuto",
+        "revisore": "revisore", "max_revisioni": 2,
+    }
 
 
 def test_main_server_indipendenti_e_chiusi(monkeypatch):
