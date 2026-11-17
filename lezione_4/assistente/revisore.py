@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from assistente.config import Config
 from assistente.modello import CHIAVE_SEGNAPOSTO, RAGIONAMENTO_DISATTIVATO, pulisci_ragionamento
+from assistente.riassunto import testo_con_riassunto
 from assistente.router import DomandaMista
 
 log = logging.getLogger("revisore")
@@ -118,7 +119,8 @@ def _presenta_turno(turno: list[AnyMessage], mista: DomandaMista | None = None) 
 
 
 def messaggi_per_revisore(
-    messaggi: list[AnyMessage], inizio_turno: int, ambito: str, mista: DomandaMista | None = None
+    messaggi: list[AnyMessage], inizio_turno: int, ambito: str, mista: DomandaMista | None = None,
+    riassunto: str = "",
 ) -> list[BaseMessage]:
     """Istruzioni, domande e risposte dei turni precedenti, poi il turno corrente presentato in testo."""
     contesto: list[BaseMessage] = []
@@ -128,7 +130,7 @@ def messaggi_per_revisore(
         elif isinstance(m, AIMessage) and not m.tool_calls and m.content:
             contesto.append(m)
     return [
-        SystemMessage(ISTRUZIONI_REVISORE.format(ambito=ambito)),
+        SystemMessage(testo_con_riassunto(ISTRUZIONI_REVISORE.format(ambito=ambito), riassunto)),
         *contesto,
         HumanMessage(_presenta_turno(messaggi[inizio_turno:], mista)),
     ]
@@ -140,9 +142,10 @@ def rivedi(
     inizio_turno: int,
     ambito: str,
     mista: DomandaMista | None = None,
+    riassunto: str = "",
 ) -> Giudizio | None:
     """Giudica la risposta del turno; None se il revisore fallisce (la risposta passa com'è)."""
-    inviati = messaggi_per_revisore(messaggi, inizio_turno, ambito, mista)
+    inviati = messaggi_per_revisore(messaggi, inizio_turno, ambito, mista, riassunto)
     log.debug("messaggi inviati al revisore: %s", inviati)
     try:
         esito = revisore.invoke(inviati)

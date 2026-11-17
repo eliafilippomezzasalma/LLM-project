@@ -5,6 +5,7 @@ from pydantic import ValidationError
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from assistente.config import Config
+from assistente.riassunto import PREFISSO_RIASSUNTO
 from assistente.modello import RAGIONAMENTO_DISATTIVATO
 from assistente.revisore import (
     ISTRUZIONI_REVISORE,
@@ -245,3 +246,12 @@ def test_rivedi_passa_la_mista_al_revisore():
     revisore = RevisoreFinto([APPROVATA])
     assert rivedi(revisore, _turno_misto(), 0, "x", MISTA_RIDOTTA) == APPROVATA
     assert "solo le parti in ambito" in revisore.chiamate[0][-1].content
+
+
+def test_messaggi_per_revisore_con_riassunto_nelle_istruzioni():
+    storia = [HumanMessage("ciao"), AIMessage("Ciao!")]
+    senza = messaggi_per_revisore(storia, 0, "x")
+    assert messaggi_per_revisore(storia, 0, "x", riassunto="") == senza
+    con = messaggi_per_revisore(storia, 0, "x", riassunto="Si chiama Elia.")
+    assert con[0].content == f"{senza[0].content}\n\n{PREFISSO_RIASSUNTO} Si chiama Elia."
+    assert con[1:] == senza[1:]

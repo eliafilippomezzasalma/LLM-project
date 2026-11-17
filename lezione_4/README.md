@@ -2,7 +2,7 @@
 
 Chat da terminale in Python che conversa con un modello servito da **LM Studio** sul computer
 host. Il flusso è un grafo **LangGraph** esplicito (nodo `router` → nodo `agente` ⇄ nodo `strumenti`, poi la risposta finale dell'agente → nodo `revisore`,
-oppure nodo `rifiuto`), la cronologia dura quanto la sessione e il modello può chiedere l'ora con lo
+oppure nodo `rifiuto`; prima di tutto il nodo `riassunto` comprime la cronologia lunga), la cronologia dura quanto la sessione e il modello può chiedere l'ora con lo
 strumento **`get_current_time`**, che richiede sempre un fuso orario IANA (es. `Asia/Tokyo`).
 Può anche convertire unità di misura con lo strumento **`convert_units`**, offerto da un server
 **MCP** separato (`convertitore.py`) che l'assistente avvia da solo all'avvio.
@@ -26,7 +26,8 @@ assistente/
   modello.py    client verso LM Studio (API compatibile OpenAI)
   router.py     router d'ambito: classifica ogni domanda (conversazione / fuori ambito)
   revisore.py   revisore della risposta: giudica se la risposta finale è coerente con la domanda e con gli strumenti
-  grafo.py      grafo LangGraph router → agente (⇄ strumenti) → revisore, oppure rifiuto, con limite di passaggi
+  riassunto.py  riassunto della cronologia: sostituisce i turni vecchi con un testo breve (soglia in messaggi o token)
+  grafo.py      grafo LangGraph riassunto → router → agente (⇄ strumenti) → revisore, oppure rifiuto, con limite di passaggi
   sessione.py   cronologia della sessione e prompt di sistema
   terminale.py  chat da terminale (python -m assistente)
   mcp_remoto.py ponte sincrono verso un server MCP avviato via stdio
@@ -66,9 +67,12 @@ Copy-Item .env.example .env
 | `MESSAGGIO_RIFIUTO` | sì | vedi `.env.example` | risposta fissa data alle domande fuori ambito (senza chiamare l'agente) |
 | `MAX_TOOL_STEPS` | no | `3` | passaggi modello → strumenti per ogni domanda |
 | `MAX_REVISIONI` | no | `3` | quante volte il revisore può rimandare la risposta all'agente per ogni domanda: intero ≥ 0, predefinito 3; con 0 il revisore giudica una volta ma non rimanda mai all'agente (specifica in [`specs.md`](specs.md) §18) |
+| `RIASSUNTO_SOGLIA_TIPO` | no | `token` | come si misura la cronologia: `token` (predefinito; stima: caratteri / 4, senza il prompt di sistema) oppure `messaggi` |
+| `RIASSUNTO_SOGLIA` | no | `5000` | intero ≥ 1: oltre questo valore (messaggi o token stimati, secondo il tipo) i turni vecchi vengono riassunti; predefinito 5000 |
+| `RIASSUNTO_TURNI_DA_TENERE` | no | `3` | intero ≥ 1: ultimi turni completi conservati interi dopo il riassunto; predefinito 3 |
 | `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO` o `WARNING` |
 
-Con Docker le tre variabili nuove (`AMBITO_ASSISTENTE`, `MESSAGGIO_RIFIUTO`, `MAX_REVISIONI`) vanno nel `.env`, come le altre.
+Con Docker tutte le variabili aggiunte da router, revisore e riassunto (`AMBITO_ASSISTENTE`, `MESSAGGIO_RIFIUTO`, `MAX_REVISIONI` e le `RIASSUNTO_*`) vanno nel `.env`, come le altre: Compose lo passa al contenitore con `env_file: .env`.
 
 Per vedere gli identificativi dei modelli disponibili:
 
@@ -131,7 +135,7 @@ WARNING revisore: errore del modello nel tentativo dopo la revisione (...), rest
 ### Grafo con il revisore
 
 ```
-router → agente ⇄ strumenti
+riassunto → router → agente ⇄ strumenti
             ↓ (risposta finale)
          revisore → agente (risposta rimandata, al massimo MAX_REVISIONI volte)
             ↓
@@ -139,6 +143,78 @@ router → agente ⇄ strumenti
 agente → ultima_risposta → fine (limite degli strumenti nel tentativo dopo una revisione)
 router → rifiuto → fine
 ```
+
+### Riassunto della cronologia
+
+Prima di ogni domanda il nodo `riassunto` conta i messaggi della cronologia (senza il prompt di
+sistema, compresa la domanda nuova). Se superano `RIASSUNTO_SOGLIA`, i turni più vecchi, tranne gli
+ultimi `RIASSUNTO_TURNI_DA_TENERE`, sono tolti dalla cronologia e sostituiti da un riassunto che il
+modello scrive e che va in coda al prompt di sistema (specifica in [`specs.md`](specs.md) §19).
+Se il riassunto non riesce, la cronologia resta invariata. Una riga di log per domanda:
+
+```
+INFO riassunto: 6 messaggi, sotto la soglia (10), nessuna chiamata
+INFO riassunto: 12 -> 5 messaggi (tolti 7, conservati 2 turni)
+INFO riassunto: 13 messaggi, sopra la soglia (10) ma niente da togliere, nessuna chiamata
+WARNING riassunto: risposta non valida (...), cronologia invariata
+```
+
+Con `RIASSUNTO_SOGLIA_TIPO=token` (il predefinito) le righe riportano anche i token stimati, prima e dopo.
+Per provare in fretta la compressione si possono impostare `RIASSUNTO_SOGLIA_TIPO=messaggi`, `RIASSUNTO_SOGLIA=10` e `RIASSUNTO_TURNI_DA_TENERE=2`: sono i valori delle righe di esempio qui sopra e delle misure qui sotto.
+
+### Misure del riassunto
+
+Misure del 2026-11-17 con `qwen/qwen3.5-9b`, app vera via stdin, valori bassi per le prove, non i predefiniti
+(prima soglia 10 messaggi e ultimi 2 turni, poi 300 token stimati e ultimi 3 turni); un turno dura 1–3 minuti.
+
+Istruzioni del riassunto, 3 casi preparati × 2 prove («nessun risultato degli strumenti nel riassunto»):
+
+| Versione | Riassunti con risultati degli strumenti | Nome, preferenze, rifiuti |
+|---|---|---|
+| prima stesura | 2/3 | presenti |
+| v1 («MAI la risposta», con esempi) | 1/6 | presenti |
+| v2 (+ «nemmeno approssimato», conserva ogni domanda) | 1/6 | presenti, domande più complete |
+| **v3, in uso** (+ «usa solo i numeri scritti dall'utente») | **0/5** (+1 timeout) | presenti |
+
+Conversazioni lunghe e regressione (prima versione, soglia 10 messaggi, ultimi 2 turni):
+
+| Prova | Turni | Compressioni | Esito |
+|---|---|---|---|
+| Misura 1 (nome + preferenza «miglia» al 1° turno) | 16 | 12 | risultati giusti, fuori ambito e seguito rifiutati; **nome e preferenza non usati** ai turni 10–11 |
+| Misura 2 (nome + preferenza «risposte brevi») | 15 | 12 | 9/9 risultati giusti, seguiti in ambito riusciti; **nome e preferenza non usati** ai turni 10 e 14 |
+| Regressione 15 domande | 15 | 10 | router 15/15, risposte giuste 14/14 (prima 13/14), rimandi del revisore 3 (prima 5) |
+| Docker, 6 turni | 6 | 3 | righe `riassunto` nel log, «Come mi chiamo?» → «Ti chiami Elia» |
+
+Guasti del riassunto: 0 nelle misure, 2 timeout nella regressione con LM Studio carico; in entrambi i casi la
+cronologia resta intera e il turno prosegue (fail-open).
+
+Ritocchi per nome e preferenze (2026-11-17), misurati con i due test reali sulla compressione ripetuti 3 volte:
+
+| Versione | Nome dopo la compressione | Seguito «e in piedi?» |
+|---|---|---|
+| prima versione | 1/2 | 0/3 |
+| giro 1: `PREFISSO_RIASSUNTO` rafforzato (usa il riassunto per nome, preferenze e seguiti brevi) | 2/3 | 1/3 |
+| **giro 2, in uso**: + regola nel riassuntore «inizia sempre con nome e preferenze» | **3/3** | 1/3 (una volta il router rifiuta il seguito, una volta la risposta dà solo i km) |
+
+Con il giro 2 il riassunto comincia con «L'utente si chiama Elia e preferisce le distanze in miglia.» (4/4 casi
+preparati con nome noto). Misure 1 e 2 rifatte in modalità token (`RIASSUNTO_SOGLIA_TIPO=token`,
+`RIASSUNTO_SOGLIA=300`, ultimi 3 turni), una sessione LM Studio alla volta:
+
+| Prova | Turni | Compressioni | Esito |
+|---|---|---|---|
+| Misura 1 | 16 | 2 (355 → 119 e 368 → 197 token stimati) | numeri tutti giusti, fuori ambito e seguito rifiutati; «Come mi chiamo?» → Elia, «30 km nella mia unità preferita» → 18,64 miglia; **errore** al turno 15 (vedi limiti) |
+| Misura 2 | 15 | 1 (305 → 129 token stimati) | 15/15 risposte giuste; «Qual è il mio nome?» → Marta, «Come ti avevo chiesto di rispondermi?» → «Preferisci risposte molto brevi» |
+
+Un turno pesa circa 25 token stimati: con i predefiniti (5000 token) la compressione parte dopo circa 200 turni.
+
+**Limiti noti:**
+- un seguito ellittico che si riferisce a un turno già riassunto («Converti 5 miglia in km» … «e in piedi?»)
+  viene spesso agganciato all'ultimo turno conservato o rifiutato dal router: il test reale
+  `test_seguito_dopo_la_compressione_reale` passa a volte (risposta giusta 1 volta su 3);
+- una domanda sull'inizio della conversazione subito dopo una compressione («Ti ricordi che cosa ti avevo chiesto
+  all'inizio?», misura 1) ha ricevuto di nuovo la risposta del turno precedente, e il router l'ha trattata come
+  domanda mista;
+- il testo del riassunto si vede solo a livello `DEBUG` (`LOG_LEVEL=DEBUG`).
 
 ### Misure del revisore
 

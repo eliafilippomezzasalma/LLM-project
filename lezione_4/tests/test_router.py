@@ -4,6 +4,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from assistente.config import Config
+from assistente.riassunto import PREFISSO_RIASSUNTO
 from assistente.modello import RAGIONAMENTO_DISATTIVATO
 from pydantic import ValidationError
 
@@ -176,3 +177,12 @@ def test_domanda_mista_pulisce_spazi_e_parti_vuote():
     assert domanda_mista(esito, "che ore sono? ricetta e barzelletta") == DomandaMista(
         "che ore sono?", ["ricetta", "barzelletta"]
     )
+
+
+def test_messaggi_per_router_con_riassunto_nelle_istruzioni():
+    storia = [HumanMessage("ciao"), AIMessage("Ciao!"), HumanMessage("e a Tokyo?")]
+    senza = messaggi_per_router(storia, "x")
+    assert messaggi_per_router(storia, "x", "") == senza
+    con = messaggi_per_router(storia, "x", "Si chiama Elia.")
+    assert con[0].content == f"{senza[0].content}\n\n{PREFISSO_RIASSUNTO} Si chiama Elia."
+    assert con[1:] == senza[1:]

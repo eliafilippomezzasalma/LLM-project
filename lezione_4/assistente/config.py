@@ -4,6 +4,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 
@@ -18,6 +19,15 @@ class ErroreConfigurazione(Exception):
 
 
 @dataclass(frozen=True)
+class SogliaRiassunto:
+    """Quando riassumere la cronologia e quanti turni recenti lasciare intatti."""
+
+    tipo: Literal["messaggi", "token"] = "token"
+    valore: int = 5000
+    turni_da_tenere: int = 3
+
+
+@dataclass(frozen=True)
 class Config:
     lm_base_url: str
     lm_model: str
@@ -26,6 +36,7 @@ class Config:
     ambito_assistente: str
     messaggio_rifiuto: str
     max_revisioni: int = 3
+    riassunto: SogliaRiassunto = SogliaRiassunto()
 
 
 def _obbligatoria(env: Mapping[str, str], nome: str) -> str:
@@ -61,6 +72,31 @@ def _max_revisioni(env: Mapping[str, str]) -> int:
     return valore
 
 
+def _intero_positivo(env: Mapping[str, str], nome: str, predefinito: int) -> int:
+    grezzo = env.get(nome, str(predefinito)).strip()
+    try:
+        valore = int(grezzo)
+    except ValueError:
+        valore = 0
+    if valore < 1:
+        raise ErroreConfigurazione(f"{nome} deve essere un intero maggiore o uguale a 1, trovato: {grezzo!r}")
+    return valore
+
+
+def _riassunto(env: Mapping[str, str]) -> SogliaRiassunto:
+    grezzo = env.get("RIASSUNTO_SOGLIA_TIPO", "token").strip()
+    tipo = grezzo.lower() or "token"
+    if tipo not in ("messaggi", "token"):
+        raise ErroreConfigurazione(
+            f"RIASSUNTO_SOGLIA_TIPO deve essere uno tra messaggi, token, trovato: {grezzo!r}"
+        )
+    return SogliaRiassunto(
+        tipo=tipo,
+        valore=_intero_positivo(env, "RIASSUNTO_SOGLIA", 5000),
+        turni_da_tenere=_intero_positivo(env, "RIASSUNTO_TURNI_DA_TENERE", 3),
+    )
+
+
 def _log_level(env: Mapping[str, str]) -> str:
     grezzo = env.get("LOG_LEVEL", "INFO").strip()
     valore = grezzo.upper() or "INFO"
@@ -82,4 +118,5 @@ def carica_config(env: Mapping[str, str] | None = None) -> Config:
         ambito_assistente=_obbligatoria(env, "AMBITO_ASSISTENTE"),
         messaggio_rifiuto=_obbligatoria(env, "MESSAGGIO_RIFIUTO"),
         max_revisioni=_max_revisioni(env),
+        riassunto=_riassunto(env),
     )

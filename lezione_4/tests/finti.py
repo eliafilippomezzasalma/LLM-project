@@ -2,6 +2,7 @@
 
 from langchain_core.messages import AIMessage
 
+from assistente.config import SogliaRiassunto
 from assistente.grafo import costruisci_grafo
 from assistente.revisore import Giudizio
 from assistente.router import Classificazione
@@ -75,17 +76,28 @@ class RevisoreFinto(RouterFinto):
     """Stesso comportamento di RouterFinto (esiti in ordine, ripete l'ultimo, solleva le eccezioni)."""
 
 
+class RiassuntoreFinto(RouterFinto):
+    """Come RouterFinto, ma restituisce il testo preparato come AIMessage (le eccezioni vengono sollevate)."""
+
+    def invoke(self, messaggi, config=None, **kwargs):
+        return AIMessage(super().invoke(messaggi, config, **kwargs))
+
+
+SOGLIA_ALTA = SogliaRiassunto("messaggi", 1000, 2)
+
 APPROVATA = Giudizio(motivo="risponde a tutto", regola="nessuna", coerente=True)
 RESPINTA = Giudizio(motivo="manca la seconda parte", regola="completezza", coerente=False)
 
 RIFIUTO = "Non posso aiutarti."
 
 
-def grafo_in_ambito(modello, registro, max_passi=3, revisore=None, max_revisioni=2):
-    """Grafo con router sempre in ambito e revisore che approva (se non indicato altrimenti)."""
+def grafo_in_ambito(modello, registro, max_passi=3, revisore=None, max_revisioni=2, riassuntore=None, soglia=SOGLIA_ALTA):
+    """Grafo con router sempre in ambito, revisore che approva e soglia del riassunto altissima (se non indicato altrimenti)."""
     return costruisci_grafo(
         modello, registro, max_passi,
         router=RouterFinto([IN_AMBITO]), ambito="ambito di prova", messaggio_rifiuto=RIFIUTO,
         revisore=revisore if revisore is not None else RevisoreFinto([APPROVATA]),
         max_revisioni=max_revisioni,
+        riassuntore=riassuntore if riassuntore is not None else RiassuntoreFinto(["riassunto di prova"]),
+        soglia=soglia,
     )

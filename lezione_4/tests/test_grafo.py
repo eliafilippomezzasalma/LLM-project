@@ -3,14 +3,14 @@ from datetime import datetime, timezone
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from assistente.config import Config
+from assistente.config import Config, SogliaRiassunto
 from assistente.grafo import costruisci_grafo, dopo_revisore, dopo_router, instrada, limite_raggiunto
 from assistente.orologio import crea_orologio
 from assistente.revisore import PREFISSO_INDICAZIONE, Giudizio
 from assistente.strumenti import crea_registro
 from finti import (
-    APPROVATA, FUORI, IN_AMBITO, MISTA, RESPINTA, RIFIUTO, ModelloFinto, RevisoreFinto, RouterFinto, chiede_ora,
-    grafo_in_ambito,
+    APPROVATA, FUORI, IN_AMBITO, MISTA, RESPINTA, RIFIUTO, ModelloFinto, RevisoreFinto, RiassuntoreFinto, RouterFinto,
+    SOGLIA_ALTA, chiede_ora, grafo_in_ambito,
 )
 
 ISTANTE = datetime(2026, 10, 26, 11, 30, 41, tzinfo=timezone.utc)
@@ -124,7 +124,7 @@ def test_limite_alto_non_supera_ricorsione():
 def test_grafo_ha_nodi_espliciti():
     grafo = grafo_in_ambito(ModelloFinto([AIMessage("x")]), REGISTRO, max_passi=3)
     nodi = set(grafo.get_graph().nodes) - {"__start__", "__end__"}
-    assert nodi == {"router", "agente", "strumenti", "rifiuto", "revisore", "ultima_risposta"}
+    assert nodi == {"router", "agente", "strumenti", "rifiuto", "revisore", "ultima_risposta", "riassunto"}
 
 
 def test_debug_registra_i_messaggi_inviati(caplog):
@@ -146,10 +146,12 @@ def test_debug_registra_la_chiamata_fallita(caplog):
     assert any(r.getMessage().startswith("chiamata -> errore") for r in caplog.records)
 
 
-def _grafo(modello, router, ambito="ambito di prova", revisore=None):
+def _grafo(modello, router, ambito="ambito di prova", revisore=None, riassuntore=None, soglia=SOGLIA_ALTA):
     return costruisci_grafo(
         modello, REGISTRO, 3, router=router, ambito=ambito, messaggio_rifiuto=RIFIUTO,
         revisore=revisore if revisore is not None else RevisoreFinto([APPROVATA]), max_revisioni=2,
+        riassuntore=riassuntore if riassuntore is not None else RiassuntoreFinto(["riassunto di prova"]),
+        soglia=soglia,
     )
 
 
@@ -559,3 +561,194 @@ def test_domanda_mista_respinta_mantiene_la_riduzione():
              "Che ore sono a Tokyo? E dammi la ricetta della pizza")
     assert len(revisore.chiamate) == 2
     assert all("solo le parti in ambito" in c[-1].content for c in revisore.chiamate)
+
+
+# --- nodo riassunto (specs §19) ---
+
+SOGLIA_10 = SogliaRiassunto("messaggi", 10, 2)
+
+
+def _turni(n):
+    """n turni semplici di due messaggi (domanda e risposta)."""
+    messaggi = []
+    for i in range(1, n + 1):
+        messaggi += [HumanMessage(f"domanda {i}"), AIMessage(f"risposta {i}")]
+    return messaggi
+
+
+def _contenuti(stato):
+    return [(type(m).__name__, m.content) for m in stato["messages"]]
+
+
+def test_sotto_soglia_nessuna_chiamata(caplog):
+    caplog.set_level(logging.INFO)
+    riassuntore = RiassuntoreFinto(["non deve servire"])
+    modello = ModelloFinto([AIMessage("ok")])
+    grafo = _grafo(modello, RouterFinto([IN_AMBITO]), riassuntore=riassuntore, soglia=SOGLIA_10)
+    stato = grafo.invoke(_stato(*_turni(2), HumanMessage("domanda 3")))
+    assert riassuntore.chiamate == []
+    assert [m.content for m in stato["messages"]] == [
+        "domanda 1", "risposta 1", "domanda 2", "risposta 2", "domanda 3", "ok"]
+    assert _righe(caplog, "riassunto", "INFO") == ["5 messaggi, sotto la soglia (10), nessuna chiamata"]
+
+
+def test_sopra_soglia_riassume(caplog):
+    caplog.set_level(logging.INFO)
+    riassuntore = RiassuntoreFinto(["riassunto nuovo"])
+    modello = ModelloFinto([AIMessage("fatto")])
+    grafo = _grafo(modello, RouterFinto([IN_AMBITO]), riassuntore=riassuntore, soglia=SOGLIA_10)
+    stato = grafo.invoke(_stato(SystemMessage("sistema"), *_turni(5), HumanMessage("domanda 6")))
+    assert len(riassuntore.chiamate) == 1
+    assert _contenuti(stato) == [
+        ("SystemMessage", "sistema"),
+        ("HumanMessage", "domanda 4"), ("AIMessage", "risposta 4"),
+        ("HumanMessage", "domanda 5"), ("AIMessage", "risposta 5"),
+        ("HumanMessage", "domanda 6"), ("AIMessage", "fatto"),
+    ]
+    assert stato["riassunto"] == "riassunto nuovo"
+    assert _righe(caplog, "riassunto", "INFO") == [
+        "11 -> 5 messaggi (tolti 6, conservati 2 turni)"]
+
+
+def test_riassunto_sostituito_non_accumulato():
+    riassuntore = RiassuntoreFinto(["nuovo"])
+    modello = ModelloFinto([AIMessage("fatto")])
+    grafo = _grafo(modello, RouterFinto([IN_AMBITO]), riassuntore=riassuntore, soglia=SOGLIA_10)
+    stato = grafo.invoke({**_stato(*_turni(5), HumanMessage("domanda 6")), "riassunto": "vecchio"})
+    assert "vecchio" in riassuntore.chiamate[0][-1].content
+    assert stato["riassunto"] == "nuovo"
+    assert "vecchio" not in str([m.content for m in stato["messages"]])
+    assert "vecchio" not in str([m.content for m in modello.chiamate[0]])
+
+
+def test_niente_da_togliere(caplog):
+    caplog.set_level(logging.INFO)
+    riassuntore = RiassuntoreFinto(["non deve servire"])
+    grafo = _grafo(ModelloFinto([AIMessage("ok")]), RouterFinto([IN_AMBITO]),
+                   riassuntore=riassuntore, soglia=SogliaRiassunto("messaggi", 3, 2))
+    stato = grafo.invoke(_stato(*_turni(2), HumanMessage("domanda 3")))
+    assert riassuntore.chiamate == []
+    assert len(stato["messages"]) == 6
+    assert _righe(caplog, "riassunto", "INFO") == [
+        "5 messaggi, sopra la soglia (3) ma niente da togliere, nessuna chiamata"]
+
+
+def test_modalita_token(caplog):
+    caplog.set_level(logging.INFO)
+    soglia = SogliaRiassunto("token", 50, 1)
+    riassuntore = RiassuntoreFinto(["sintesi"])
+    grafo = _grafo(ModelloFinto([AIMessage("ok")]), RouterFinto([IN_AMBITO]), riassuntore=riassuntore, soglia=soglia)
+    grafo.invoke(_stato(*_turni(2), HumanMessage("d")))
+    assert riassuntore.chiamate == []
+    [riga] = _righe(caplog, "riassunto", "INFO")
+    assert riga.startswith("5 messaggi, ")
+    assert riga.endswith(" token stimati, sotto la soglia (50), nessuna chiamata")
+    caplog.clear()
+    lungo = [HumanMessage("a" * 100), AIMessage("b" * 100), HumanMessage("c" * 100), AIMessage("d" * 100),
+             HumanMessage("nuova")]
+    grafo.invoke(_stato(*lungo))
+    assert len(riassuntore.chiamate) == 1
+    [riga] = _righe(caplog, "riassunto", "INFO")
+    assert riga.startswith("5 -> 3 messaggi (tolti 2, conservati 1 turno), ")
+    assert riga.endswith(" token stimati") and "-> " in riga.split("), ")[1]
+
+
+def test_coppia_chiamata_risultato_spezzata_cronologia_invariata(caplog):
+    caplog.set_level(logging.INFO)
+    riassuntore = RiassuntoreFinto(["non deve servire"])
+    chiamata = AIMessage("", tool_calls=[{"name": "get_current_time", "args": {}, "id": "c1"}])
+    cronologia = [HumanMessage("domanda 1"), AIMessage("risposta 1"), HumanMessage("domanda 2"), chiamata,
+                  HumanMessage("domanda 3"), AIMessage("risposta 3")]
+    grafo = _grafo(ModelloFinto([AIMessage("fatto")]), RouterFinto([IN_AMBITO]),
+                   riassuntore=riassuntore, soglia=SogliaRiassunto("messaggi", 3, 2))
+    stato = grafo.invoke({**_stato(*cronologia, HumanMessage("domanda 4")), "riassunto": "precedente"})
+    assert riassuntore.chiamate == []
+    assert [m.content for m in stato["messages"]][:7] == [
+        "domanda 1", "risposta 1", "domanda 2", "", "domanda 3", "risposta 3", "domanda 4"]
+    assert stato["riassunto"] == "precedente"
+    assert stato["messages"][-1].content == "fatto"
+    avvisi = _righe(caplog, "riassunto", "WARNING")
+    assert len(avvisi) == 1 and "cronologia invariata" in avvisi[0]
+
+
+def test_riga_riassunto_senza_prefisso_doppio(caplog):
+    from assistente.log import FORMATO, FORMATO_ORA
+    caplog.set_level(logging.INFO)
+    grafo = _grafo(ModelloFinto([AIMessage("ok")]), RouterFinto([IN_AMBITO]),
+                   riassuntore=RiassuntoreFinto(["non serve"]), soglia=SOGLIA_10)
+    grafo.invoke(_stato(*_turni(2), HumanMessage("domanda 3")))
+    [record] = [r for r in caplog.records if r.name == "riassunto"]
+    riga = logging.Formatter(FORMATO, datefmt=FORMATO_ORA).format(record)
+    assert " INFO riassunto: 5 messaggi, sotto la soglia (10)" in riga
+    assert "riassunto: riassunto:" not in riga
+
+
+def test_riassunto_in_errore_fail_open(caplog):
+    caplog.set_level(logging.INFO)
+    riassuntore = RiassuntoreFinto([ConnectionError("giù")])
+    grafo = _grafo(ModelloFinto([AIMessage("fatto")]), RouterFinto([IN_AMBITO]),
+                   riassuntore=riassuntore, soglia=SOGLIA_10)
+    stato = grafo.invoke({**_stato(*_turni(5), HumanMessage("domanda 6")), "riassunto": "precedente"})
+    assert len(stato["messages"]) == 12
+    assert stato["riassunto"] == "precedente"
+    assert stato["messages"][-1].content == "fatto"
+    avvisi = _righe(caplog, "riassunto", "WARNING")
+    assert len(avvisi) == 1 and "risposta non valida" in avvisi[0] and "cronologia invariata" in avvisi[0]
+
+
+def test_agente_vede_il_riassunto():
+    modello = ModelloFinto([AIMessage("ok")])
+    grafo = _grafo(modello, RouterFinto([IN_AMBITO]))
+    grafo.invoke({**_stato(SystemMessage("PROMPT"), HumanMessage("ciao")), "riassunto": "Si chiama Elia."})
+    inviati = modello.chiamate[0]
+    assert [m for m in inviati if isinstance(m, SystemMessage)] == [inviati[0]]
+    assert inviati[0].content.startswith("PROMPT") and inviati[0].content.endswith("Si chiama Elia.")
+    modello = ModelloFinto([AIMessage("ok")])
+    _grafo(modello, RouterFinto([IN_AMBITO])).invoke(_stato(SystemMessage("PROMPT"), HumanMessage("ciao")))
+    assert modello.chiamate[0][0].content == "PROMPT"
+
+
+def test_router_e_revisore_vedono_il_riassunto():
+    router, revisore = RouterFinto([IN_AMBITO]), RevisoreFinto([APPROVATA])
+    grafo = _grafo(ModelloFinto([AIMessage("ok")]), router, revisore=revisore)
+    grafo.invoke({**_stato(HumanMessage("ciao")), "riassunto": "Si chiama Elia."})
+    assert "Si chiama Elia." in router.chiamate[0][0].content
+    assert "Si chiama Elia." in revisore.chiamate[0][0].content
+    router, revisore = RouterFinto([IN_AMBITO]), RevisoreFinto([APPROVATA])
+    _grafo(ModelloFinto([AIMessage("ok")]), router, revisore=revisore).invoke(_stato(HumanMessage("ciao")))
+    assert "Riassunto della conversazione" not in router.chiamate[0][0].content
+    assert "Riassunto della conversazione" not in revisore.chiamate[0][0].content
+
+
+def test_revisore_dopo_il_taglio_solo_il_turno_corrente():
+    storia = []
+    for i in range(1, 4):
+        storia += [
+            HumanMessage(f"ora {i}"),
+            AIMessage("", tool_calls=[{"name": "get_current_time", "args": {"timezone": "Asia/Tokyo"},
+                                       "id": f"t{i}", "type": "tool_call"}]),
+            ToolMessage("20:30", tool_call_id=f"t{i}"),
+            AIMessage(f"risposta {i}"),
+        ]
+    # il turno corrente chiede un'ora con un fuso diverso: serve solo che l'argomento sia riconoscibile
+    corrente = chiede_ora("Europe/Rome", "k1")
+    modello = ModelloFinto([corrente, AIMessage("fatto")])
+    revisore = RevisoreFinto([APPROVATA])
+    riassuntore = RiassuntoreFinto(["sintesi"])
+    grafo = _grafo(modello, RouterFinto([IN_AMBITO]), revisore=revisore, riassuntore=riassuntore,
+                   soglia=SogliaRiassunto("messaggi", 10, 1))
+    stato = grafo.invoke(_stato(*storia, HumanMessage("che ore sono a Roma?")))
+    assert len(riassuntore.chiamate) == 1
+    turno = revisore.chiamate[0][-1].content
+    assert "Europe/Rome" in turno and "Asia/Tokyo" not in turno
+    assert stato["messages"][-1].content == "fatto"
+
+
+def test_rifiuto_dopo_compressione():
+    riassuntore = RiassuntoreFinto(["sintesi"])
+    modello = ModelloFinto([AIMessage("non deve parlare")])
+    grafo = _grafo(modello, RouterFinto([FUORI]), riassuntore=riassuntore, soglia=SOGLIA_10)
+    stato = grafo.invoke(_stato(*_turni(5), HumanMessage("ricetta")))
+    assert len(riassuntore.chiamate) == 1 and stato["riassunto"] == "sintesi"
+    assert stato["messages"][-1].content == RIFIUTO
+    assert modello.chiamate == []

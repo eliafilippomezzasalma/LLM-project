@@ -1,6 +1,6 @@
 import pytest
 
-from assistente.config import Config, ErroreConfigurazione, carica_config
+from assistente.config import Config, ErroreConfigurazione, SogliaRiassunto, carica_config
 
 BASE = {
     "LM_BASE_URL": "http://localhost:1234/v1",
@@ -11,7 +11,15 @@ BASE = {
 
 
 def test_valori_completi():
-    env = {**BASE, "MAX_TOOL_STEPS": "5", "LOG_LEVEL": "DEBUG", "MAX_REVISIONI": "4"}
+    env = {
+        **BASE,
+        "MAX_TOOL_STEPS": "5",
+        "LOG_LEVEL": "DEBUG",
+        "MAX_REVISIONI": "4",
+        "RIASSUNTO_SOGLIA_TIPO": "token",
+        "RIASSUNTO_SOGLIA": "5000",
+        "RIASSUNTO_TURNI_DA_TENERE": "3",
+    }
     assert carica_config(env) == Config(
         lm_base_url="http://localhost:1234/v1",
         lm_model="qwen/qwen3.5-9b",
@@ -20,6 +28,7 @@ def test_valori_completi():
         ambito_assistente="orari e calcoli",
         messaggio_rifiuto="Non posso aiutarti.",
         max_revisioni=4,
+        riassunto=SogliaRiassunto("token", 5000, 3),
     )
 
 
@@ -35,6 +44,40 @@ def test_max_revisioni_zero_ammesso():
 def test_max_revisioni_non_valido(valore):
     with pytest.raises(ErroreConfigurazione, match="MAX_REVISIONI"):
         carica_config({**BASE, "MAX_REVISIONI": valore})
+
+
+def test_riassunto_predefinito():
+    assert carica_config(BASE).riassunto == SogliaRiassunto("token", 5000, 3)
+
+
+def test_riassunto_token():
+    env = {
+        **BASE,
+        "RIASSUNTO_SOGLIA_TIPO": "token",
+        "RIASSUNTO_SOGLIA": "5000",
+        "RIASSUNTO_TURNI_DA_TENERE": "3",
+    }
+    assert carica_config(env).riassunto == SogliaRiassunto("token", 5000, 3)
+
+
+def test_riassunto_tipo_maiuscolo_e_spazi():
+    assert carica_config({**BASE, "RIASSUNTO_SOGLIA_TIPO": " Token "}).riassunto.tipo == "token"
+
+
+@pytest.mark.parametrize(
+    "nome, valore",
+    [
+        ("RIASSUNTO_SOGLIA_TIPO", "parole"),
+        ("RIASSUNTO_SOGLIA", "0"),
+        ("RIASSUNTO_SOGLIA", "-1"),
+        ("RIASSUNTO_SOGLIA", "dieci"),
+        ("RIASSUNTO_TURNI_DA_TENERE", "0"),
+        ("RIASSUNTO_TURNI_DA_TENERE", "1.5"),
+    ],
+)
+def test_riassunto_non_valido(nome, valore):
+    with pytest.raises(ErroreConfigurazione, match=nome):
+        carica_config({**BASE, nome: valore})
 
 
 def test_predefiniti():

@@ -1,12 +1,16 @@
-"""Grafo LangGraph esplicito: router d'ambito, agente con strumenti, revisore della risposta, rifiuto fisso.
+"""Grafo LangGraph esplicito: riassunto, router d'ambito, agente con strumenti, revisore, rifiuto fisso.
 
-    START → router ──(fuori_ambito)──→ rifiuto → END
-                  └─(conversazione o router non valido)──→ agente ⇄ strumenti
-                                                            │ (risposta finale)
-                                                            ▼
-                                                        revisore ──(coerente, revisore non valido,
-                                                            │       o limite revisioni)──→ END
-                                                            └─(non coerente, sotto il limite)──→ agente
+    START → riassunto → router ──(fuori_ambito)──→ rifiuto → END
+                               └─(conversazione o router non valido)──→ agente ⇄ strumenti
+                                                                         │ (risposta finale)
+                                                                         ▼
+                                                                     revisore ──(coerente, revisore non valido,
+                                                                         │       o limite revisioni)──→ END
+                                                                         └─(non coerente, sotto il limite)──→ agente
+
+    Riassunto (primo nodo, a ogni turno): sopra la soglia sostituisce i turni vecchi con un testo breve
+    (campo `riassunto`), tenendo interi gli ultimi turni; se il modello fallisce la cronologia resta intera.
+    Il riassunto non è un messaggio: router, agente e revisore lo aggiungono alle proprie istruzioni.
 
     Limite degli strumenti: al primo tentativo del turno → END (LimitePassaggiRaggiunto in Sessione);
     in un tentativo dopo una revisione → ultima_risposta (l'ultima risposta proposta) → END.
@@ -20,13 +24,15 @@ import logging
 import time
 from typing import Annotated, Literal, NotRequired, TypedDict
 
-from langchain_core.messages import AIMessage, AnyMessage
+from langchain_core.messages import AIMessage, AnyMessage, RemoveMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from assistente.config import SogliaRiassunto
 from assistente.revisore import indicazione, respinta, rivedi
+from assistente.riassunto import conversazione, coppie_complete, messaggi_con_riassunto, misura, punto_di_taglio, riassumi
 from assistente.router import FUORI_AMBITO, DomandaMista, classifica, domanda_mista
 from assistente.strumenti import esegui_chiamate
 
@@ -34,6 +40,7 @@ log_agente = logging.getLogger("agente")
 log_router = logging.getLogger("router")
 log_rifiuto = logging.getLogger("rifiuto")
 log_revisore = logging.getLogger("revisore")
+log_riassunto = logging.getLogger("riassunto")
 
 
 class StatoAssistente(TypedDict):
@@ -47,6 +54,7 @@ class StatoAssistente(TypedDict):
     ultima_proposta: NotRequired[AIMessage | None]  # ultima risposta rifiutata, per il limite degli strumenti
     errore_agente: NotRequired[bool]  # il modello ha fallito dopo una revisione: restituita l'ultima proposta
     mista: NotRequired[DomandaMista | None]  # domanda mista: al revisore solo le parti in ambito (dal router)
+    riassunto: NotRequired[str]  # riassunto dei turni tolti dalla cronologia (dal nodo riassunto)
 
 
 def _chiede_strumenti(messaggio: AnyMessage) -> bool:
@@ -101,8 +109,41 @@ def costruisci_grafo(
     messaggio_rifiuto: str,
     revisore: Runnable,
     max_revisioni: int,
+    riassuntore: Runnable,
+    soglia: SogliaRiassunto,
 ):
-    """Costruisce e compila il grafo; modello, router, revisore e strumenti arrivano dall'esterno."""
+    """Costruisce e compila il grafo; modello, router, revisore, riassuntore e strumenti arrivano dall'esterno."""
+
+    def nodo_riassunto(stato: StatoAssistente) -> dict:
+        conv = conversazione(stato["messages"])
+        prima = misura(conv, soglia.tipo)
+        in_token = soglia.tipo == "token"
+        conteggio = f"{len(conv)} messaggi" + (f", {prima} token stimati" if in_token else "")
+        if prima <= soglia.valore:
+            log_riassunto.info("%s, sotto la soglia (%d), nessuna chiamata", conteggio, soglia.valore)
+            return {}
+        taglio = punto_di_taglio(conv, soglia.turni_da_tenere)
+        if taglio == 0:
+            log_riassunto.info(
+                "%s, sopra la soglia (%d) ma niente da togliere, nessuna chiamata",
+                conteggio, soglia.valore,
+            )
+            return {}
+        if not coppie_complete(conv[taglio:]):
+            log_riassunto.warning(
+                "risposta non valida (taglio con chiamate e risultati separati), cronologia invariata"
+            )
+            return {}
+        nuovo = riassumi(riassuntore, stato.get("riassunto", ""), conv[:taglio])
+        if nuovo is None:  # riassumi ha già registrato l'avviso
+            return {}
+        dopo = len(conv) - taglio
+        turni = "turno" if soglia.turni_da_tenere == 1 else "turni"
+        riga = f"{len(conv)} -> {dopo} messaggi (tolti {taglio}, conservati {soglia.turni_da_tenere} {turni})"
+        if in_token:
+            riga += f", {prima} -> {misura(conv[taglio:], soglia.tipo)} token stimati"
+        log_riassunto.info(riga)
+        return {"messages": [RemoveMessage(id=m.id) for m in conv[:taglio]], "riassunto": nuovo}
 
     def nodo_router(stato: StatoAssistente) -> dict:
         # Il router apre il turno: azzera lo stato del revisore e segna dove inizia il turno.
@@ -114,7 +155,7 @@ def costruisci_grafo(
             "errore_agente": False,
             "mista": None,
         }
-        esito = classifica(router, stato["messages"], ambito)
+        esito = classifica(router, stato["messages"], ambito, stato.get("riassunto", ""))
         if esito is None:  # classifica ha già registrato l'avviso
             return {**turno, "categoria": None, "motivo": None}
         destinazione = dopo_router({"categoria": esito.categoria})
@@ -138,7 +179,7 @@ def costruisci_grafo(
         log_agente.debug("messaggi inviati: %s", [(m.type, m.text) for m in stato["messages"]])
         inizio = time.perf_counter()
         try:
-            risposta = modello.invoke(stato["messages"])
+            risposta = modello.invoke(messaggi_con_riassunto(stato["messages"], stato.get("riassunto", "")))
         except Exception as errore:
             log_agente.debug("chiamata -> errore (%.1fs)", time.perf_counter() - inizio)
             if not stato.get("ultima_proposta"):
@@ -170,7 +211,9 @@ def costruisci_grafo(
         return {"messages": risposte, "passi_strumento": passo}
 
     def nodo_revisore(stato: StatoAssistente) -> dict:
-        giudizio = rivedi(revisore, stato["messages"], stato["inizio_turno"], ambito, stato.get("mista"))
+        giudizio = rivedi(
+            revisore, stato["messages"], stato["inizio_turno"], ambito, stato.get("mista"), stato.get("riassunto", "")
+        )
         if giudizio is None:  # rivedi ha già registrato l'avviso: la risposta passa com'è
             return {"coerente": None}
         motivo = " ".join(giudizio.motivo.split())
@@ -211,13 +254,15 @@ def costruisci_grafo(
         return {"messages": [stato["ultima_proposta"].model_copy(update={"id": None})]}
 
     grafo = StateGraph(StatoAssistente)
+    grafo.add_node("riassunto", nodo_riassunto)
     grafo.add_node("router", nodo_router)
     grafo.add_node("agente", nodo_agente)
     grafo.add_node("strumenti", nodo_strumenti)
     grafo.add_node("rifiuto", nodo_rifiuto)
     grafo.add_node("revisore", nodo_revisore)
     grafo.add_node("ultima_risposta", nodo_ultima_risposta)
-    grafo.add_edge(START, "router")
+    grafo.add_edge(START, "riassunto")
+    grafo.add_edge("riassunto", "router")
     grafo.add_conditional_edges("router", dopo_router, {"agente": "agente", "rifiuto": "rifiuto"})
     grafo.add_edge("rifiuto", END)
     grafo.add_conditional_edges(
@@ -235,4 +280,5 @@ def costruisci_grafo(
     # Fino a max_revisioni + 1 tentativi; ognuno usa due super-step per passaggio agli strumenti
     # (agente + strumenti) più la risposta finale e il revisore; poi router e margine. Il limite
     # di ricorsione di LangGraph deve stare sopra ai nostri limiti, altrimenti scatterebbe prima.
-    return grafo.compile().with_config(recursion_limit=(max_revisioni + 1) * (2 * max_passi + 2) + 6)
+    # Il +1 finale è il super-step del riassunto.
+    return grafo.compile().with_config(recursion_limit=(max_revisioni + 1) * (2 * max_passi + 2) + 6 + 1)

@@ -96,24 +96,32 @@ class Sessione:
         self.grafo = grafo
         self.nota = nota
         self.cronologia: list[BaseMessage] = [SystemMessage(PROMPT_SISTEMA)]
+        self.riassunto = ""  # dei turni tolti dalla cronologia dal nodo riassunto (specs §19.2)
 
     def chiedi(self, domanda: str) -> str:
-        """Esegue un turno; la cronologia cambia solo se il turno riesce."""
+        """Esegue un turno; cronologia e riassunto cambiano solo se il turno riesce."""
         domanda_msg = HumanMessage(domanda)
-        stato = self.grafo.invoke({"messages": [*self.cronologia, domanda_msg], "passi_strumento": 0})
+        stato = self.grafo.invoke(
+            {"messages": [*self.cronologia, domanda_msg], "passi_strumento": 0, "riassunto": self.riassunto}
+        )
         if limite_raggiunto(stato):
             raise LimitePassaggiRaggiunto()
         testo = pulisci_ragionamento(stato["messages"][-1].text) or RISPOSTA_VUOTA
+        # Il nodo riassunto può aver accorciato la cronologia: il turno parte dalla domanda
+        # (inizio_turno), non da len(self.cronologia).
+        inizio = stato["inizio_turno"]
+        nuova = stato["messages"][:inizio]
         if self.nota is not None:
             risultati = [
                 str(m.content)
-                for m in stato["messages"][len(self.cronologia) + 1 :]
+                for m in stato["messages"][inizio + 1 :]
                 if isinstance(m, ToolMessage) and m.name == STRUMENTO_CON_NOTA
             ]
             testo = self.nota.completa(testo, risultati)
             self.nota.registra_risposta(testo)
-        passaggi = stato["messages"][len(self.cronologia) + 1 : -1]
-        self.cronologia += [domanda_msg, *_chiamate_da_conservare(passaggi), AIMessage(testo)]
+        passaggi = stato["messages"][inizio + 1 : -1]
+        self.cronologia = [*nuova, domanda_msg, *_chiamate_da_conservare(passaggi), AIMessage(testo)]
+        self.riassunto = stato.get("riassunto", "")
         return testo
 
 

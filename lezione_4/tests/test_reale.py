@@ -11,6 +11,7 @@ from assistente.grafo import costruisci_grafo, limite_raggiunto
 from assistente.modello import crea_modello, pulisci_ragionamento
 from assistente.orologio import crea_orologio
 from assistente.revisore import crea_revisore, respinta, rivedi
+from assistente.riassunto import crea_riassuntore
 from assistente.router import classifica, crea_router, domanda_mista
 from assistente.sessione import PROMPT_SISTEMA
 from assistente.strumenti import crea_registro
@@ -32,6 +33,8 @@ def test_tokyo_usa_lo_strumento():
         ambito=config.ambito_assistente,
         messaggio_rifiuto=config.messaggio_rifiuto,
         revisore=crea_revisore(config),
+        riassuntore=crea_riassuntore(config),
+        soglia=config.riassunto,
         max_revisioni=config.max_revisioni,
     )
 
@@ -83,6 +86,8 @@ def _chiedi_con_argomenti(domanda):
             ambito=config.ambito_assistente,
             messaggio_rifiuto=config.messaggio_rifiuto,
             revisore=crea_revisore(config),
+            riassuntore=crea_riassuntore(config),
+            soglia=config.riassunto,
             max_revisioni=config.max_revisioni,
         )
         catturato = {}
@@ -209,6 +214,8 @@ def test_router_fuori_ambito_reale(caplog):
         ambito=config.ambito_assistente,
         messaggio_rifiuto=config.messaggio_rifiuto,
         revisore=crea_revisore(config),
+        riassuntore=crea_riassuntore(config),
+        soglia=config.riassunto,
         max_revisioni=config.max_revisioni,
     )
     with caplog.at_level("DEBUG", logger="agente"):
@@ -377,6 +384,8 @@ def test_parziale_poi_completa_reale(caplog):
             ambito=config.ambito_assistente,
             messaggio_rifiuto=config.messaggio_rifiuto,
             revisore=crea_revisore(config),
+            riassuntore=crea_riassuntore(config),
+            soglia=config.riassunto,
             max_revisioni=config.max_revisioni,
         )
         with caplog.at_level("INFO", logger="revisore"):
@@ -416,6 +425,8 @@ def test_coerente_al_primo_passaggio_reale(caplog):
             ambito=config.ambito_assistente,
             messaggio_rifiuto=config.messaggio_rifiuto,
             revisore=crea_revisore(config),
+            riassuntore=crea_riassuntore(config),
+            soglia=config.riassunto,
             max_revisioni=config.max_revisioni,
         )
         with caplog.at_level("INFO", logger="revisore"):
@@ -431,3 +442,122 @@ def test_coerente_al_primo_passaggio_reale(caplog):
     print("\nRevisore:", righe, "\nRisposta:", stato["messages"][-1].content)
     assert len(righe) == 1, righe
     assert _approvata(righe[0]), righe
+
+
+# ── Riassunto della cronologia (specs.md §19) ───────────────────────────────────
+
+def _righe_riassunto(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == "riassunto"]
+
+
+def _sessione_con_riassunto(soglia):
+    """Sessione con il grafo vero e la soglia data; restituisce (sessione, grafo spia, chiusura)."""
+    from assistente.nota import NotaNonNormativa, con_nota
+    from assistente.sessione import Sessione
+    from assistente.terminale import collega_calcolatrice, collega_convertitore, collega_scadenze
+
+    config = carica_config()
+    remoti = [collega_convertitore(), collega_calcolatrice(), collega_scadenze()]
+
+    def chiudi():
+        for remoto in remoti:
+            if remoto:
+                remoto.chiudi()
+
+    try:
+        assert all(remoti), "un server MCP non si è avviato"
+        nota = NotaNonNormativa()
+        strumenti = con_nota([crea_orologio(), *(s for r in remoti for s in r.strumenti())], nota)
+        grafo = costruisci_grafo(
+            crea_modello(config, strumenti),
+            crea_registro(strumenti),
+            config.max_tool_steps,
+            router=crea_router(config),
+            ambito=config.ambito_assistente,
+            messaggio_rifiuto=config.messaggio_rifiuto,
+            revisore=crea_revisore(config),
+            riassuntore=crea_riassuntore(config),
+            soglia=soglia,
+            max_revisioni=config.max_revisioni,
+        )
+    except BaseException:
+        chiudi()
+        raise
+    catturato = {}
+
+    class GrafoSpia:
+        def invoke(self, stato, *args, **kwargs):
+            catturato["stato"] = grafo.invoke(stato, *args, **kwargs)
+            return catturato["stato"]
+
+    return Sessione(GrafoSpia(), nota), catturato, chiudi
+
+
+def _testo_cronologia(sessione):
+    return " ".join(str(m.content) for m in sessione.cronologia)
+
+
+def test_nome_del_primo_turno_dopo_la_compressione_reale(caplog):
+    from assistente.config import SogliaRiassunto
+
+    sessione, _, chiudi = _sessione_con_riassunto(SogliaRiassunto("messaggi", 6, 1))
+    try:
+        with caplog.at_level("INFO", logger="riassunto"):
+            sessione.chiedi("Ciao, mi chiamo Elia")
+            sessione.chiedi("Che ore sono a Tokyo?")
+            sessione.chiedi("Quanto fa 15 per 4?")
+            risposta = sessione.chiedi("Come mi chiamo?")
+    finally:
+        chiudi()
+    righe = _righe_riassunto(caplog)
+    print("\nRiassunto (log):", righe, "\nRiassunto:", sessione.riassunto, "\nRisposta:", risposta)
+    assert any(" -> " in r for r in righe), righe
+    assert "mi chiamo Elia" not in _testo_cronologia(sessione), sessione.cronologia
+    assert "Elia" in risposta, risposta
+
+
+def test_seguito_dopo_la_compressione_reale(caplog):
+    from assistente.config import SogliaRiassunto
+
+    sessione, catturato, chiudi = _sessione_con_riassunto(SogliaRiassunto("messaggi", 6, 1))
+    try:
+        with caplog.at_level("INFO", logger="riassunto"):
+            sessione.chiedi("Converti 5 miglia in km")
+            sessione.chiedi("Che ore sono a Sydney?")
+            sessione.chiedi("Che ore sono a Tokyo?")
+            assert "Converti 5 miglia" not in _testo_cronologia(sessione), sessione.cronologia
+            risposta = sessione.chiedi("e in piedi?")
+        stato = catturato["stato"]
+    finally:
+        chiudi()
+    righe = _righe_riassunto(caplog)
+    chiamate = [
+        c["args"]
+        for m in stato["messages"][stato["inizio_turno"] :]
+        if isinstance(m, AIMessage)
+        for c in m.tool_calls
+        if c["name"] == "convert_units"
+    ]
+    print("\nRiassunto (log):", righe, "\nRiassunto:", sessione.riassunto, "\nChiamate:", chiamate, "\nRisposta:", risposta)
+    assert any(" -> " in r for r in righe), righe
+    assert chiamate, f"nessuna chiamata a convert_units nel turno del seguito: {risposta!r}"
+    ultima = chiamate[0]
+    assert float(ultima["value"]) == 5, ultima
+    assert str(ultima["from_unit"]).lower() in ("mi", "mile", "miles", "miglia", "miglio"), ultima
+
+
+@pytest.mark.parametrize(
+    "domanda, categoria",
+    [
+        ("come mi chiamo?", "conversazione"),
+        ("che unità ti ho chiesto di usare?", "conversazione"),
+        ("Dammi la ricetta della carbonara", "fuori_ambito"),
+        ("Chi vincerà le prossime elezioni?", "fuori_ambito"),
+        ("Raccontami una barzelletta", "fuori_ambito"),
+    ],
+)
+def test_router_domande_sulla_conversazione_reale(domanda, categoria):
+    config = carica_config()
+    esito = classifica(crea_router(config), [HumanMessage(domanda)], config.ambito_assistente)
+    assert esito is not None, "il router non ha dato un esito valido"
+    assert esito.categoria == categoria, (domanda, esito)

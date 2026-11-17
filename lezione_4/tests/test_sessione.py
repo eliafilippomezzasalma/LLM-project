@@ -2,6 +2,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
+from assistente.config import SogliaRiassunto
 from assistente.grafo import costruisci_grafo
 from assistente.nota import RIGA_NOTA, NotaNonNormativa, con_nota
 from assistente.orologio import crea_orologio
@@ -9,8 +10,8 @@ from assistente.revisore import PREFISSO_INDICAZIONE, Giudizio
 from assistente.sessione import PROMPT_SISTEMA, LimitePassaggiRaggiunto, Sessione
 from assistente.strumenti import crea_registro
 from finti import (
-    APPROVATA, FUORI, IN_AMBITO, RESPINTA, RIFIUTO, ModelloCheFallisce, ModelloFinto, RevisoreFinto, RouterFinto,
-    chiede_ora, grafo_in_ambito,
+    APPROVATA, FUORI, IN_AMBITO, RESPINTA, RIFIUTO, ModelloCheFallisce, ModelloFinto, RevisoreFinto, RiassuntoreFinto, RouterFinto,
+    SOGLIA_ALTA, chiede_ora, grafo_in_ambito,
 )
 
 REGISTRO = crea_registro([crea_orologio()])
@@ -245,6 +246,7 @@ def _sessione_con_nota(risposte, max_passi=3, router=None):
         grafo = costruisci_grafo(
             modello, registro, max_passi, router=router, ambito="ambito di prova", messaggio_rifiuto=RIFIUTO,
             revisore=RevisoreFinto([APPROVATA]), max_revisioni=2,
+            riassuntore=RiassuntoreFinto(["x"]), soglia=SOGLIA_ALTA,
         )
     return Sessione(grafo, nota), nota, modello
 
@@ -307,6 +309,7 @@ def test_rifiuto_in_cronologia_senza_motivo():
     grafo = costruisci_grafo(
         modello, REGISTRO, 3, router=RouterFinto([FUORI]), ambito="ambito di prova", messaggio_rifiuto=RIFIUTO,
         revisore=RevisoreFinto([APPROVATA]), max_revisioni=2,
+        riassuntore=RiassuntoreFinto(["x"]), soglia=SOGLIA_ALTA,
     )
     sessione = Sessione(grafo)
     assert sessione.chiedi("ricetta della carbonara") == RIFIUTO
@@ -338,6 +341,7 @@ def test_revisione_fuori_dalla_cronologia():
     grafo = costruisci_grafo(
         modello, REGISTRO, 3, router=router, ambito="ambito di prova", messaggio_rifiuto=RIFIUTO,
         revisore=RevisoreFinto([RESPINTA, APPROVATA]), max_revisioni=2,
+        riassuntore=RiassuntoreFinto(["x"]), soglia=SOGLIA_ALTA,
     )
     sessione = Sessione(grafo)
     assert sessione.chiedi("Dimmi la parte 1 e la parte 2") == "parte 1 e parte 2"
@@ -393,3 +397,145 @@ def test_errore_agente_dopo_revisione_risposta_in_cronologia():
     assert _contenuto(sessione.cronologia) == [
         (SystemMessage, PROMPT_SISTEMA), (HumanMessage, "Che ore sono?"), (AIMessage, "prima"),
     ]
+
+
+# --- Riassunto: la sessione conserva cronologia accorciata e riassunto (specs §19.2) ---
+
+SOGLIA_BASSA = SogliaRiassunto("messaggi", 6, 1)
+
+
+def _risposte(n):
+    return [AIMessage(f"a{i}") for i in range(1, n + 1)]
+
+
+def _sessione_riassunto(risposte, riassunti=("r1", "r2", "r3"), registro=REGISTRO, revisore=None, nota=None):
+    modello = ModelloFinto(risposte)
+    riassuntore = RiassuntoreFinto(list(riassunti))
+    grafo = grafo_in_ambito(
+        modello, registro, max_passi=3, revisore=revisore, riassuntore=riassuntore, soglia=SOGLIA_BASSA
+    )
+    return Sessione(grafo, nota), modello, riassuntore
+
+
+def _fai_turni(sessione, da, a):
+    for i in range(da, a + 1):
+        sessione.chiedi(f"d{i}")
+
+
+def test_cronologia_accorciata_e_riassunto_conservato():
+    sessione, _, riassuntore = _sessione_riassunto(_risposte(4))
+    _fai_turni(sessione, 1, 3)
+    assert sessione.riassunto == ""
+    assert riassuntore.chiamate == []
+    _fai_turni(sessione, 4, 4)
+    assert sessione.riassunto == "r1"
+    assert _contenuto(sessione.cronologia) == [
+        (SystemMessage, PROMPT_SISTEMA), (HumanMessage, "d3"), (AIMessage, "a3"),
+        (HumanMessage, "d4"), (AIMessage, "a4"),
+    ]
+
+
+def test_riassunto_iniziale_vuoto():
+    sessione, _, _ = _sessione_riassunto(_risposte(1))
+    assert sessione.riassunto == ""
+
+
+def test_due_compressioni_consecutive():
+    sessione, _, riassuntore = _sessione_riassunto(_risposte(6))
+    _fai_turni(sessione, 1, 6)
+    assert sessione.riassunto == "r2"
+    assert len(riassuntore.chiamate) == 2
+    assert "Riassunto precedente: r1" in riassuntore.chiamate[1][-1].content
+    assert _contenuto(sessione.cronologia) == [
+        (SystemMessage, PROMPT_SISTEMA), (HumanMessage, "d5"), (AIMessage, "a5"),
+        (HumanMessage, "d6"), (AIMessage, "a6"),
+    ]
+    # La seconda compressione riassume solo i turni 3 e 4, ognuno una volta.
+    testo = riassuntore.chiamate[1][-1].content
+    for atteso in ("d3", "a3", "d4", "a4"):
+        assert testo.count(atteso) == 1
+    assert "d5" not in testo and "d2" not in testo
+
+
+def test_turno_fallito_non_tocca_riassunto_ne_cronologia():
+    sessione, _, riassuntore = _sessione_riassunto(
+        _risposte(3) + [ConnectionError("LM Studio spento")] + [AIMessage("a4")]
+    )
+    _fai_turni(sessione, 1, 3)
+    prima = _contenuto(sessione.cronologia)
+    with pytest.raises(ConnectionError):
+        sessione.chiedi("d4")
+    assert _contenuto(sessione.cronologia) == prima
+    assert sessione.riassunto == ""
+    assert len(riassuntore.chiamate) == 1
+    sessione.chiedi("d4")
+    assert len(riassuntore.chiamate) == 2  # riassume di nuovo
+    assert sessione.riassunto == "r2"
+
+
+def test_limite_passaggi_dopo_compressione_non_tocca_riassunto_ne_cronologia():
+    risposte = _risposte(3) + [chiede_ora("Europe/Rome", f"c{i}") for i in range(10)]
+    sessione, _, riassuntore = _sessione_riassunto(risposte)
+    _fai_turni(sessione, 1, 3)
+    prima = _contenuto(sessione.cronologia)
+    with pytest.raises(LimitePassaggiRaggiunto):
+        sessione.chiedi("d4")
+    assert _contenuto(sessione.cronologia) == prima
+    assert sessione.riassunto == ""
+    assert len(riassuntore.chiamate) == 1
+
+
+def test_cronologia_dopo_compressione_senza_revisioni():
+    sessione, _, _ = _sessione_riassunto(
+        _risposte(3) + [AIMessage("parziale"), AIMessage("a4 completa")],
+        revisore=RevisoreFinto([APPROVATA, APPROVATA, APPROVATA, RESPINTA, APPROVATA]),
+    )
+    _fai_turni(sessione, 1, 4)
+    assert sessione.riassunto == "r1"
+    assert _contenuto(sessione.cronologia) == [
+        (SystemMessage, PROMPT_SISTEMA), (HumanMessage, "d3"), (AIMessage, "a3"),
+        (HumanMessage, "d4"), (AIMessage, "a4 completa"),
+    ]
+    assert not any(PREFISSO_INDICAZIONE in str(m.content) or "[Revisione]" in str(m.content) for m in sessione.cronologia)
+    assert not any(m.content == "parziale" for m in sessione.cronologia)
+
+
+def _registro_scadenze(nota):
+    strumento = StructuredTool.from_function(_scadenza_finta, name="compute_deadline", description="finto")
+    return crea_registro(con_nota([strumento], nota))
+
+
+def test_nota_dopo_compressione_non_ripetuta():
+    nota = NotaNonNormativa()
+    risposte = [_chiede(SCADENZA), RISPOSTA_CON_NOTA, AIMessage("a2"), AIMessage("a3"), _chiede(SCADENZA), AIMessage("a4")]
+    sessione, modello, _ = _sessione_riassunto(risposte, registro=_registro_scadenze(nota), nota=nota)
+    _fai_turni(sessione, 1, 4)
+    assert sessione.riassunto == "r1"
+    assert nota.consegnata is True
+    assert "Nota:" not in _tool_message_finale(modello)
+    assert RIGA_NOTA not in sessione.cronologia[-1].content
+
+
+def test_nota_aggiunta_nel_turno_che_comprime():
+    nota = NotaNonNormativa()
+    risposte = _risposte(3) + [_chiede(SCADENZA), AIMessage("Scade il 2026-01-02.")]
+    sessione, _, _ = _sessione_riassunto(risposte, registro=_registro_scadenze(nota), nota=nota)
+    _fai_turni(sessione, 1, 3)
+    testo = sessione.chiedi("d4")
+    assert sessione.riassunto == "r1"
+    assert testo.endswith(RIGA_NOTA)
+    assert nota.consegnata is True
+
+
+def test_chiamate_conservate_dopo_compressione():
+    risposte = _risposte(3) + [chiede_ora("Asia/Tokyo"), AIMessage("A Tokyo sono le 20:30.")]
+    sessione, _, _ = _sessione_riassunto(risposte)
+    _fai_turni(sessione, 1, 3)
+    sessione.chiedi("Che ore sono a Tokyo?")
+    assert sessione.riassunto == "r1"
+    assert [type(m) for m in sessione.cronologia] == [
+        SystemMessage, HumanMessage, AIMessage, HumanMessage, AIMessage, ToolMessage, AIMessage,
+    ]
+    assert [c["name"] for c in sessione.cronologia[4].tool_calls] == ["get_current_time"]
+    assert sessione.cronologia[5].name == "get_current_time"
+    assert sessione.cronologia[-1].content == "A Tokyo sono le 20:30."

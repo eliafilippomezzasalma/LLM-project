@@ -116,6 +116,8 @@ Ciao!
 - Righe vuote ignorate.
 - La cronologia (messaggio di sistema + scambi precedenti) viene passata al grafo a ogni
   domanda ed è tenuta come lista in memoria dall'interfaccia da terminale.
+  *Aggiunto il 2026-11-17:* quando la cronologia supera la soglia, il nodo `riassunto` toglie i
+  turni vecchi e li sostituisce con un riassunto nel prompt di sistema (vedi §19).
 - Di un turno riuscito la cronologia conserva il messaggio dell'utente, le chiamate allo
   strumento con le loro risposte (`AIMessage` con tool_call e `ToolMessage`) e la risposta
   finale. *Modificato il 2026-11-13:* prima chiamate e risposte dell'orologio non venivano
@@ -1456,3 +1458,274 @@ le evidenze 1 e 4 non comparirebbero. Per questo si producono a due livelli:
 - Testo delle istruzioni del revisore e dell'indicazione, da affinare con le misure.
 - Forma con cui il turno corrente viene presentato al revisore, purché contenga quanto in §18.4.
 - Formato esatto delle righe di log, purché contengano quanto in §18.7.
+
+## 19. Riassunto della cronologia: terzo nodo LLM — aggiunto il 2026-11-16
+
+Stato: implementata (2026-11-17), con due limiti noti misurati (nome/preferenze dopo più compressioni,
+seguito ellittico verso un turno riassunto: vedi README «Misure del riassunto»); piano:
+`docs/superpowers/plans/2026-11-16-riassunto-cronologia.md`. In specifica dal 2026-11-16. Si parte dal codice del commit `2eea005` (router §17 e revisore
+§18), verificato prima di cominciare. Indipendente dalla §16 (bozza, non implementata). Restano
+aperti dal passo precedente, fuori da questo lavoro salvo diversa decisione dell'utente: il
+secondo controllo sulle false «domande miste» nei seguiti, le righe g7/g8 nel README, i test
+reali completi e la regressione del revisore.
+
+### 19.1 Intento
+
+Terzo e ultimo passo dell'evoluzione dell'assistente in un grafo con nodi LLM (router §17,
+revisore §18). Testo del compito (dall'utente):
+
+> Un nodo LLM sostituisce i messaggi più vecchi con un riassunto e mantiene intatti gli ultimi
+> turni.
+
+**Obiettivo (dall'utente):** la conversazione resta utilizzabile su molti turni senza perdere le
+informazioni importanti.
+
+Da realizzare (dall'utente):
+1. soglia configurabile, in numero di messaggi o stima dei token, oltre la quale si riassume;
+2. nodo riassunto all'inizio del turno: comprime i messaggi vecchi e conserva gli ultimi N turni;
+3. il riassunto è un campo dello stato che viene aggiornato, non accumulato;
+4. il taglio non separa mai una richiesta di strumento dal relativo `ToolMessage`.
+
+Regola di lavoro dell'utente: ogni passo riparte dal precedente funzionante e verificato, con le
+evidenze richieste.
+
+### 19.2 Dove vive la memoria (deciso dall'utente: strada A)
+
+Oggi il grafo non ha memoria tra i turni: `Sessione` conserva la cronologia e la passa intera a
+ogni `invoke`; la aggiorna solo se il turno riesce (§6.2). Due strade valutate con l'utente:
+- **A (scelta):** `Sessione` conserva **cronologia e riassunto** e li passa al grafo a ogni turno;
+  il nodo `riassunto` restituisce il riassunto nuovo e la cronologia accorciata; `Sessione` li
+  salva **solo se il turno riesce**.
+- B (scartata): checkpointer di LangGraph con `thread_id`; avrebbe richiesto di riscrivere il
+  ripristino dopo un turno fallito e la pulizia della cronologia (risposte respinte, chiamate non
+  conservate, nota), con ricadute su gran parte dei test.
+
+Conseguenze della strada A:
+- `riassunto` è un **campo di `StatoAssistente`** (testo, vuoto o assente se non c'è ancora un
+  riassunto): entra nel grafo con la cronologia, il nodo lo **sostituisce** con quello nuovo, e
+  `Sessione` lo conserva per il turno dopo. Non si accumulano riassunti.
+- Turno fallito (limite degli strumenti, errore del modello): cronologia e riassunto di
+  `Sessione` restano quelli di prima; il riassunto fatto all'inizio del turno si perde e si rifà
+  al turno seguente (costo accettato).
+- Tutto ciò che `Sessione` fa oggi resta: in cronologia entrano solo domanda, chiamate di
+  `STRUMENTI_IN_CRONOLOGIA` con i loro risultati e risposta finale ripulita con la nota; le
+  risposte respinte dal revisore e le indicazioni non entrano mai (§18.12). Il calcolo di che cosa
+  aggiungere va adattato: dopo il riassunto la cronologia nel grafo è più corta di quella di
+  `Sessione`, quindi non si può più usare `len(self.cronologia)` come punto di partenza del turno.
+
+### 19.3 Grafo
+
+Percorso principale (dall'utente): `START → riassunto → router → agente → revisore → END`. Con
+gli archi esistenti:
+
+```
+START → riassunto → router ──(fuori_ambito)──→ rifiuto → END
+                           └─(conversazione o router non valido)──→ agente ⇄ strumenti
+                                                                     │ (risposta finale)
+                                                                     ▼
+                                                                 revisore ──→ END | agente
+```
+
+- **riassunto** (nuovo, LLM): primo nodo, si esegue **a ogni turno**, anche per le domande poi
+  rifiutate dal router (il riassunto riguarda la cronologia, non la domanda nuova). Arco fisso
+  verso il router.
+- Router, agente, strumenti, revisore, rifiuto e i loro archi **invariati**, salvo il riassunto
+  nel loro contesto (§19.6). `inizio_turno` resta calcolato dal router, che gira dopo il
+  riassunto, quindi sulla cronologia già accorciata.
+- Il limite di ricorsione si alza di uno (super-step del riassunto).
+- `costruisci_grafo` riceve il modello del riassunto e i parametri della soglia come
+  dipendenze, così i test iniettano un modello finto.
+
+### 19.4 Soglia e taglio
+
+**Configurazione.** Variabili d'ambiente in
+`config.py`, facoltative con valore predefinito, validate come `MAX_REVISIONI` (errore all'avvio
+che nomina la variabile):
+
+| Variabile | Contenuto | Predefinito |
+|---|---|---|
+| `RIASSUNTO_SOGLIA_TIPO` | `messaggi` oppure `token` | `token` |
+| `RIASSUNTO_SOGLIA` | intero ≥ 1: messaggi, o token stimati, oltre i quali si riassume | `5000` |
+| `RIASSUNTO_TURNI_DA_TENERE` | intero ≥ 1: ultimi turni completi conservati interi (N) | `3` |
+
+*Nomi delle variabili: scelta mia.* *Aggiornato il 2026-11-17 (deciso dall'utente):* predefiniti realistici token/5000/3; i valori bassi (messaggi/10/2) restano per le prove e le misure.
+
+**Che cosa si conta (scelta mia).** I messaggi dello stato all'ingresso del nodo **esclusi il
+prompt di sistema e il riassunto**, compresa la domanda nuova: domande, risposte, chiamate agli
+strumenti e loro risultati, rifiuti. In modalità `token` la stima è **caratteri / 4**
+(arrotondata per eccesso) sul testo dei messaggi più gli argomenti delle chiamate, senza
+librerie nuove. La soglia scatta quando il conteggio è **maggiore** del valore.
+
+**Turno.** Un turno comincia con un messaggio dell'utente (`HumanMessage`) e comprende tutto ciò
+che segue fino al messaggio dell'utente successivo: chiamate, `ToolMessage`, risposta finale o
+rifiuto fisso.
+
+**Taglio (requisito 4).** Sopra la soglia si conservano interi la domanda nuova e gli **ultimi N
+turni completi** prima di essa; tutto ciò che sta prima va al riassunto. Il punto di taglio è
+sempre l'inizio di un turno, cioè un `HumanMessage`: una chiamata e il suo `ToolMessage` stanno
+sempre nello stesso turno, quindi non vengono mai separati. *Scelta mia:* il taglio si calcola in
+una funzione pura testabile a parte, e un controllo verifica che nella parte conservata ogni
+tool_call abbia il suo `ToolMessage` e viceversa. Se il controllo fallisce (non dovrebbe mai
+succedere), si tratta come un guasto del riassunto (§19.5): cronologia intera, `WARNING`, il turno
+prosegue.
+
+**Casi limite (scelte mie):**
+- sopra la soglia ma con N turni o meno prima della domanda (per esempio turni lunghi con molti
+  strumenti): niente da togliere, **nessuna chiamata al modello**, riga di log che lo dice;
+- c'è un riassunto precedente ma la cronologia è sotto la soglia: il riassunto resta com'è,
+  nessuna chiamata.
+
+### 19.5 Il modello del riassunto
+
+- **Stesso modello** di LM Studio, **senza strumenti**, ragionamento disattivato, timeout proprio
+  di 60 s e `max_retries=0`, come router e revisore. Output in **testo libero** (non serve output
+  strutturato), ripulito con `pulisci_ragionamento`.
+- **Ingresso:** istruzioni del riassunto, il **riassunto precedente** (se c'è) e i **messaggi
+  tolti** presentati in testo (domande, risposte, chiamate agli strumenti con il loro nome).
+  **Uscita:** un unico riassunto nuovo che **sostituisce** il precedente e ne conserva le
+  informazioni ancora utili (requisito 3).
+- **Che cosa conservare (deciso con l'utente):** dati personali e preferenze dell'utente (il nome,
+  «rispondimi in miglia»), gli argomenti e i dati delle domande fatte (per esempio «ha chiesto di
+  convertire 5 miglia in km»), così che un seguito dopo la compressione funzioni ancora; le
+  richieste fuori ambito che sono state rifiutate, annotate come rifiutate (*scelta mia*: altrimenti
+  un seguito come «e quella dell'amatriciana?» non avrebbe più contesto per il router, §17.2).
+- **Che cosa non conservare (scelta mia, approvata in linea di principio dall'utente):** i
+  **risultati** degli strumenti (orari, conversioni, calcoli, date). Riportati nel riassunto,
+  l'agente potrebbe riusarli a mente e il revisore li respingerebbe come `valore_a_mente`; per un
+  seguito basta sapere che cosa era stato chiesto. Se le misure mostrano che serve, si possono
+  segnare come «già calcolati», con una decisione dell'utente.
+- Riassunto breve, in italiano, in terza persona (*scelta mia*; lunghezza indicativa nelle
+  istruzioni, da affinare con le misure).
+- **Guasto (scelta mia, come router e revisore: fail-open):** eccezione, timeout o testo vuoto →
+  cronologia **non** accorciata, riassunto precedente invariato, `WARNING riassunto: …`, il turno
+  prosegue.
+
+### 19.6 Chi vede il riassunto (scelta mia)
+
+Il riassunto **non è un messaggio della cronologia**: vive solo nel campo `riassunto` dello stato
+e ogni nodo lo aggiunge al proprio contesto al momento della chiamata.
+- **Agente:** in coda al prompt di sistema, per esempio «Riassunto della conversazione
+  precedente: …», così resta un solo messaggio di sistema in testa (*scelta mia*: alcuni modelli
+  locali rifiutano un secondo messaggio di sistema in mezzo alla conversazione; da verificare al
+  primo controllo reale).
+- **Router:** nelle sue istruzioni o prima della cronologia che già vede, per capire i seguiti
+  dopo la compressione.
+- **Revisore:** tra gli scambi precedenti, così non contesta come inventato un dato (il nome) che
+  arriva dal riassunto. Le regole del revisore non cambiano.
+- Senza riassunto i messaggi inviati ai tre nodi restano **identici** a oggi.
+
+### 19.7 Log (livello INFO salvo dove indicato)
+
+- Una riga per turno dal nodo riassunto, con i messaggi prima e dopo (evidenza dell'utente), per
+  esempio:
+  - sotto la soglia: `INFO riassunto: 6 messaggi, sotto la soglia (10), nessuna chiamata`;
+  - sopra la soglia: `INFO riassunto: 12 -> 5 messaggi (tolti 7, conservati 2 turni)`;
+  - niente da togliere: `INFO riassunto: 13 messaggi, sopra la soglia (10) ma niente da togliere, nessuna chiamata`;
+  - in modalità `token` la riga riporta anche i token stimati prima e dopo.
+- Guasto: `WARNING riassunto: risposta non valida (…), cronologia invariata`.
+- DEBUG: messaggi inviati al modello del riassunto e testo del riassunto nuovo.
+- Le righe esistenti di router, agente, rifiuto e revisore restano.
+
+### 19.8 Evidenze richieste
+
+Dall'utente:
+1. **Log con il numero di messaggi prima e dopo il riassunto** (§19.7).
+2. **Un'informazione data al primo turno, come il nome dell'utente, è usata dopo la
+   compressione.**
+3. **Sotto la soglia il nodo non chiama il modello.**
+
+*Scelte mie, su come produrle:*
+- 1 e 3: test automatici con modello finto che conta le chiamate, più il log dell'app vera;
+- 2: test reale (LM Studio) e prova con l'app vera via stdin: «mi chiamo …» al primo turno, poi
+  abbastanza turni (anche con strumenti) da far scattare la compressione, poi una domanda che usa
+  il nome; si verifica nel log che il primo turno sia stato tolto e nella risposta che il nome sia
+  giusto.
+
+**Ambito allargato (deciso dall'utente il 2026-11-16).** Con l'ambito di §17.2 il router potrebbe
+rifiutare «come mi chiamo?» come fuori ambito, e l'evidenza 2 fallirebbe per colpa del router.
+`AMBITO_ASSISTENTE` (in `.env.example` e nel `.env` locale) si allarga con le domande su ciò che
+l'utente ha detto nella conversazione (per esempio il suo nome o le sue preferenze). Testo esatto
+lasciato al costruttore, purché resti su una riga e non apra la chiacchiera libera. Va verificato
+che il router classifichi `conversazione` le domande sulla conversazione e che le domande del
+tutto fuori ambito delle misure del router (§17.9) restino `fuori_ambito`.
+
+### 19.9 Test e verifiche
+
+- **Automatici (modelli finti, nessun LM Studio):**
+  - sotto la soglia → modello del riassunto mai chiamato, messaggi invariati, riga di log;
+  - sopra la soglia → chiamato una volta, conservati domanda nuova e ultimi N turni, tolto il
+    resto, `riassunto` nello stato sostituito (non aggiunto), riga di log con prima e dopo;
+  - il riassunto precedente arriva al modello insieme ai messaggi tolti;
+  - taglio con turni pieni di chiamate e `ToolMessage` (anche più chiamate in un messaggio): mai
+    una chiamata separata dal suo risultato; caso «niente da togliere»;
+  - modalità `token`: stima e soglia; validazione delle tre variabili in `config.py`;
+  - guasto del modello del riassunto → cronologia intera, WARNING, il turno prosegue;
+  - agente, router e revisore ricevono il riassunto quando c'è, e messaggi identici a oggi quando
+    non c'è;
+  - `Sessione`: dopo un turno riuscito conserva cronologia accorciata e riassunto nuovo; dopo un
+    turno fallito entrambi invariati; la cronologia continua a non contenere risposte respinte né
+    indicazioni; la nota non normativa resta data una sola volta per chat anche dopo che il turno
+    che l'ha consegnata è finito nel riassunto (lo stato è in `NotaNonNormativa`, non cambia), e
+    la ricerca dei risultati di `compute_deadline` del turno usa il nuovo punto di partenza;
+  - test esistenti aggiornati al grafo nuovo, tutti verdi.
+- **Reali (LM Studio, `RUN_REAL_TESTS=1`):** il nome del primo turno usato dopo la compressione;
+  un seguito («e in piedi?») dopo che la domanda a cui si riferisce è finita nel riassunto; con
+  l'ambito allargato il router vero classifica `conversazione` «come mi chiamo?» e simili, e le
+  domande fuori ambito restano `fuori_ambito`; i test reali esistenti restano verdi.
+- **Primo controllo reale:** formato del prompt dell'agente con il riassunto accettato da LM Studio
+  e testo del riassunto (che cosa conserva, che cosa perde, se contiene risultati).
+- **Misure (dal controllore, app vera via stdin):** conversazioni lunghe (almeno 15 turni, più
+  sessioni) con nome, preferenze, seguiti e strumenti; si contano: informazioni del primo turno
+  usate correttamente dopo la compressione, seguiti riusciti dopo la compressione, risultati a
+  mente o rifiuti del revisore causati dal riassunto, guasti del riassunto, tempo aggiunto per
+  turno. Numeri all'utente e nel README; nessuna soglia bloccante.
+- **Regressione:** le 15 domande della regressione prima (sull'albero attuale = `2eea005`, **prima
+  di toccare il codice**, senza worktree) e dopo; criterio: esiti non peggiori. Con la soglia a 10 messaggi la regressione stessa farà scattare il riassunto.
+- **Docker:** `docker compose build`, poi una conversazione che supera la soglia nel container.
+- **Chi misura:** il controllore in sessione, numeri di prima mano.
+
+### 19.10 Obiettivi
+
+- Nodo riassunto LLM all'inizio del turno, con soglia configurabile (messaggi o token stimati) e
+  ultimi N turni conservati interi.
+- Riassunto come campo dello stato, sostituito a ogni compressione.
+- Taglio sempre all'inizio di un turno, mai tra una chiamata e il suo risultato.
+- Le evidenze di §19.8, prodotte e riportate.
+
+### 19.11 Non-obiettivi
+
+- Persistenza della cronologia o del riassunto oltre la sessione; checkpointer di LangGraph.
+- Un conteggio esatto dei token con il tokenizzatore del modello.
+- Un modello diverso per il riassunto o una configurazione del modello separata.
+- Cambiare le regole del router o del revisore (l'ambito allargato di §19.8 è configurazione, non
+  una regola nuova).
+
+### 19.12 Anti-obiettivi (sarebbe un fallimento anche se «funziona»)
+
+- Informazioni importanti del primo turno perse dopo la compressione.
+- L'assistente che risponde a mente usando valori presi dal riassunto invece di chiamare gli
+  strumenti, o un revisore che rifiuta più spesso per colpa del riassunto.
+- Una chiamata a uno strumento separata dal suo `ToolMessage` (errore dell'API o del template).
+- Riassunti che si accumulano invece di sostituirsi.
+- Il modello del riassunto chiamato sotto la soglia, o un guasto del riassunto che blocca il turno.
+- Un turno fallito che lascia la cronologia accorciata o il riassunto cambiato.
+- Router, agente, revisore e strumenti che cambiano comportamento quando non c'è riassunto.
+
+### 19.13 Vincoli di lavoro
+
+- Solo in `lezione_4/`, sul branch `feature/nuove-funzionalita`; la §16 non committata resta
+  intatta e fuori da questo lavoro (commit parziale di `specs.md`).
+- **Commit e push solo su richiesta esplicita dell'utente.**
+- Aggiornare `CLAUDE.md` (struttura e obiettivo), `README.md` (variabili nuove, log, misure), la
+  descrizione del grafo in testa a `grafo.py`, `.env.example` e la regola della cronologia in §6.2
+  (rimando a questa sezione).
+
+### 19.14 Lasciato al costruttore
+
+- Nomi interni (funzioni, modulo, per esempio `assistente/riassunto.py`), salvo il campo
+  `riassunto` dello stato.
+- Testo delle istruzioni del riassunto e presentazione dei messaggi tolti, da affinare con le
+  misure (al massimo 3 giri di ritocco, si tiene il migliore).
+- Come il nodo toglie i messaggi dallo stato (per esempio `RemoveMessage` per id, o sostituzione
+  dell'intera lista) e come `Sessione` ricava la cronologia nuova, purché valga §19.2.
+- Formato esatto delle righe di log, purché contengano quanto in §19.7.

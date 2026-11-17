@@ -21,6 +21,7 @@ from assistente.modello import crea_modello
 from assistente.nota import NotaNonNormativa, con_nota
 from assistente.orologio import crea_orologio
 from assistente.revisore import crea_revisore
+from assistente.riassunto import crea_riassuntore
 from assistente.router import crea_router
 from assistente.sessione import LimitePassaggiRaggiunto, Sessione
 from assistente.strumenti import crea_registro
@@ -134,6 +135,8 @@ def main() -> int:
             messaggio_rifiuto=config.messaggio_rifiuto,
             revisore=crea_revisore(config),
             max_revisioni=config.max_revisioni,
+            riassuntore=crea_riassuntore(config),
+            soglia=config.riassunto,
         )
         testo = intestazione(config, convertitore is not None, calcolatrice is not None, scadenze is not None)
         esegui_chat(Sessione(grafo, nota), testo, config.lm_base_url)

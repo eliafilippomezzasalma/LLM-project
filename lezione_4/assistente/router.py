@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from assistente.config import Config
 from assistente.modello import CHIAVE_SEGNAPOSTO, RAGIONAMENTO_DISATTIVATO
+from assistente.riassunto import testo_con_riassunto
 
 log = logging.getLogger("router")
 
@@ -75,20 +76,22 @@ def domanda_mista(esito: Classificazione, domanda_utente: str) -> DomandaMista |
     return DomandaMista(domanda, fuori)
 
 
-def messaggi_per_router(messaggi: list[AnyMessage], ambito: str) -> list[BaseMessage]:
-    """Istruzioni del router più le sole domande e risposte in testo della cronologia."""
+def messaggi_per_router(messaggi: list[AnyMessage], ambito: str, riassunto: str = "") -> list[BaseMessage]:
+    """Istruzioni del router (con il riassunto in coda, se c'è) più le sole domande e risposte in testo della cronologia."""
     contesto: list[BaseMessage] = []
     for m in messaggi:
         if isinstance(m, HumanMessage):
             contesto.append(m)
         elif isinstance(m, AIMessage) and not m.tool_calls and m.content:
             contesto.append(m)
-    return [SystemMessage(ISTRUZIONI_ROUTER.format(ambito=ambito)), *contesto]
+    return [SystemMessage(testo_con_riassunto(ISTRUZIONI_ROUTER.format(ambito=ambito), riassunto)), *contesto]
 
 
-def classifica(router: Runnable, messaggi: list[AnyMessage], ambito: str) -> Classificazione | None:
+def classifica(
+    router: Runnable, messaggi: list[AnyMessage], ambito: str, riassunto: str = ""
+) -> Classificazione | None:
     """Classifica l'ultima domanda; None se il router fallisce (si procede verso l'agente)."""
-    inviati = messaggi_per_router(messaggi, ambito)
+    inviati = messaggi_per_router(messaggi, ambito, riassunto)
     log.debug("messaggi inviati al router: %s", inviati)
     try:
         esito = router.invoke(inviati)
