@@ -434,6 +434,78 @@ Il ritocco del prompt ha richiesto tre giri: un esempio di risposta già pronta 
 festivo…») faceva rispondere il modello **senza** strumento (12/16, una volta con una data sbagliata);
 nel prompt restano solo esempi di chiamata.
 
+### RAG: ingestion e ricerca sul ricettario (§20)
+
+Indice vettoriale delle 790 ricette dell'Artusi in Qdrant e ricerca per significato, senza
+generazione (l'assistente non la usa ancora). Specifica in `specs.md` §20, misure in
+`docs/retrieval.md`.
+
+1. Corpus: copiare il file di testo dell'Artusi (Project Gutenberg n. 59047) in `dati/artusi.txt`
+   (`dati/` è fuori da Git).
+2. LM Studio: caricare il modello di embedding indicato in `EMBEDDING_MODEL`
+   (`lms load text-embedding-nomic-embed-text-v1.5`) e avviare il server.
+3. Qdrant (volume persistente `qdrant_dati`):
+   ```powershell
+   docker compose up -d qdrant
+   ```
+4. Ingestion (script separato, da rieseguire quando cambiano corpus o chunking; circa 2–3 minuti):
+   ```powershell
+   .\venv\Scripts\python.exe -m rag.ingestion
+   ```
+   Stampa ricette, chunk, modello, punti prima/dopo e rimossi. Rieseguita, non aggiunge punti
+   (ID stabili e upsert; i punti di un chunking precedente vengono rimossi).
+5. Ricerca (k predefinito 5, massimo `RICERCA_K_MAX`; filtro per capitolo applicato da Qdrant):
+   ```powershell
+   .\venv\Scripts\python.exe -m rag.ricerca "Come si frigge il pollo?" --capitolo Fritti --k 3
+   ```
+6. Valutazione sulle domande con fonte attesa (`rag/domande_valutazione.json`):
+   ```powershell
+   .\venv\Scripts\python.exe -m rag.valutazione --k 5
+   ```
+7. Campo `contiene_dosi` (§22, modifica A): l'ingestion lo scrive già in ogni punto. Per una
+   collezione indicizzata prima della §22 lo aggiunge questo comando, che legge il testo dal
+   payload e **non ricalcola gli embedding** (pochi secondi, rieseguibile):
+   ```powershell
+   .\venv\Scripts\python.exe -m rag.metadati
+   ```
+   Poi la ricerca (o la valutazione) può limitarsi ai chunk con un elenco di ingredienti con le
+   dosi, anche insieme al capitolo:
+   ```powershell
+   .\venv\Scripts\python.exe -m rag.ricerca "Quanta farina e quante patate servono per gli gnocchi?" --capitolo "minestre asciutte e di magro" --solo-dosi --k 3
+   .\venv\Scripts\python.exe -m rag.valutazione --k 5 --solo-dosi
+   ```
+
+Variabili (in `.env.example`): `EMBEDDING_MODEL` (obbligatoria), `QDRANT_URL`
+(`http://localhost:6333`), `QDRANT_COLLECTION` (`ricette`), `RAG_CORPUS` (`dati/artusi.txt`),
+`CHUNK_STRATEGIA` (`paragrafi` o `finestra`), `CHUNK_DIMENSIONE` (1200), `CHUNK_OVERLAP` (200),
+`RICERCA_K_MAX` (10). Una variabile facoltativa lasciata vuota vale il predefinito. Con la
+strategia `paragrafi` un chunk può arrivare a dimensione + overlap caratteri (1400 con i
+predefiniti), perché l'overlap si aggiunge all'inizio del chunk. Il modello di embedding resta
+registrato nella collezione: per cambiarlo bisogna cancellare la collezione (o usarne un'altra)
+e rifare l'ingestion.
+
+**Leve del retrieval (§21).** Variabili facoltative; vuote o `no` danno il comportamento della §20:
+`EMBEDDING_PREFISSO_DOCUMENTO` e `EMBEDDING_PREFISSO_DOMANDA` (prefissi del modello di embedding),
+`INDICE_CON_TITOLO` (`si`/`no`: titolo e capitolo davanti al testo che diventa vettore),
+`RICERCA_RISCRITTURA` (`si`/`no`: il modello di chat riscrive la domanda con il lessico del libro
+prima della ricerca) e `RISCRITTURA_MODEL` (obbligatoria con la riscrittura). La collezione
+registra modello, prefissi e scelta sul titolo, e la ricerca si ferma se la configurazione è
+diversa. Se cambiano prefissi o titolo, l'ingestion ricalcola tutti i vettori **nella stessa
+collezione** (punti invariati) e registra le nuove impostazioni; per tenere più configurazioni a
+confronto si usa una `QDRANT_COLLECTION` per ciascuna. Il cambio di modello resta bloccato. La configurazione migliore misurata (`docs/retrieval.md`) è bge-m3 con titolo
+e riscrittura; per usarla nella sessione PowerShell corrente (dopo `lms load text-embedding-bge-m3`
+e l'ingestion nella collezione `ricette_bge`):
+
+```powershell
+$env:QDRANT_COLLECTION="ricette_bge"; $env:EMBEDDING_MODEL="text-embedding-bge-m3"
+$env:INDICE_CON_TITOLO="si"; $env:RICERCA_RISCRITTURA="si"; $env:RISCRITTURA_MODEL="qwen/qwen3.5-9b"
+.\venv\Scripts\python.exe -m rag.ingestion      # una volta: circa 4-5 minuti con bge-m3
+.\venv\Scripts\python.exe -m rag.ricerca "Come si prepara un dolce freddo con savoiardi e ricotta?" --k 3
+```
+
+Con la riscrittura ogni ricerca richiede una chiamata in più al modello di chat (circa 20 s con
+`qwen/qwen3.5-9b`), e la ricerca stampa la domanda effettivamente cercata.
+
 ### Docker
 
 LM Studio resta sull'host; il container lo raggiunge su `http://host.docker.internal:1234/v1`
@@ -530,3 +602,14 @@ averlo chiamato. La riga di log dice sempre se il risultato o l'errore viene dal
 | `Giorni e scadenze (MCP): non disponibile` nell'intestazione | il server `scadenze.py` non è partito: causa più probabile `festivita.json` mancante o rovinato (anche dipendenza `mcp` mancante o file assenti nell'immagine) | provare `python scadenze.py` per vedere il messaggio `scadenze: ...`; il motivo è anche nella riga di log `scadenze MCP non disponibile` |
 | `Errore: server MCP non raggiungibile` nel log | uno dei server (convertitore, calcolatrice o scadenze) si è interrotto durante la chat | riavviare l'assistente (non c'è riavvio automatico) |
 | `(nessuna risposta dal modello)` | il modello ha restituito un testo vuoto | riprovare; con `LOG_LEVEL=DEBUG` si vede l'esito di ogni chiamata (`chiamata -> risposta finale (7.6s)` o richiesta di strumento) |
+| `Errore: LM Studio non raggiungibile su http://...` (comandi `rag.*`) | LM Studio spento o server non avviato | avviare il server (`lms server start`) e controllare `LM_BASE_URL` |
+| `Errore: modello di embedding ... non disponibile in LM Studio` | modello di embedding non caricato o nome sbagliato in `EMBEDDING_MODEL` | `lms load <modello>`; confrontare con `lms ls` |
+| `Errore: Qdrant non raggiungibile su http://localhost:6333` | container Qdrant non avviato o `QDRANT_URL` sbagliato | `docker compose up -d qdrant`, `docker compose ps`; controllare `QDRANT_URL` |
+| `Errore: la collezione 'ricette' non esiste` | ingestion mai eseguita (o volume cancellato) | `python -m rag.ingestion` |
+| `Errore: ... creata con il modello ...` (modello diverso) | `EMBEDDING_MODEL` diverso da quello registrato nella collezione | rimettere il modello di prima, oppure cancellare la collezione e rifare l'ingestion, oppure usare un'altra `QDRANT_COLLECTION` |
+| `Errore: ... indicizzata con impostazioni diverse (...)` | prefissi o `INDICE_CON_TITOLO` diversi da quelli registrati nella collezione | usare la `QDRANT_COLLECTION` indicizzata con quelle impostazioni, oppure riportare le variabili ai valori registrati indicati nel messaggio |
+| `Errore: ... non hanno il campo contiene_dosi: esegui prima python -m rag.metadati` | `--solo-dosi` su una collezione indicizzata prima della §22 | `python -m rag.metadati` sulla stessa `QDRANT_COLLECTION` |
+| `Errore: l'ultima ingestion nella collezione ... non è terminata` | ingestion interrotta (LM Studio o Qdrant caduti): vettori forse misti | rieseguire `python -m rag.ingestion` con la stessa configurazione |
+| `Errore: RICERCA_RISCRITTURA=si richiede RISCRITTURA_MODEL` | riscrittura attivata senza modello di chat | impostare `RISCRITTURA_MODEL` con un identificativo di `GET /v1/models` |
+| `Errore: modello di riscrittura ... non disponibile in LM Studio` | modello di chat non caricato o nome sbagliato | `lms load <modello>`; confrontare con `lms ls` |
+| `Errore: capitolo '...' sconosciuto` | nome del capitolo diverso da quelli del libro | usare uno dei 23 capitoli elencati nel messaggio (maiuscole indifferenti) |

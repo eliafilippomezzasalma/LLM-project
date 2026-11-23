@@ -7,11 +7,15 @@ charset-normalizer==3.5.2
 click==8.5.0
 cryptography==50.0.2
 distro==1.9.0
+grpcio==1.85.3
 h11==0.16.0
+h2==4.4.1
+hpack==4.2.0
 httpcore==1.0.9
 httpcore2==2.16.0
 httpx==0.28.1
 httpx2==2.16.0
+hyperframe==6.1.0
 idna==3.20
 jiter==0.17.0
 jsonpatch==1.37
@@ -28,11 +32,14 @@ langgraph-sdk==0.4.9
 langsmith==0.14.12
 mcp==2.3.0
 mcp-types==2.3.0
+numpy==2.5.5
 openai==3.38.0
 opentelemetry-api==1.45.2
 orjson==3.13.0
 ormsgpack==1.13.0
 packaging==26.3
+portalocker==4.4.2
+protobuf==7.36.2
 pycparser==3.12
 pydantic==2.14.1
 pydantic_core==2.50.1
@@ -41,6 +48,7 @@ python-dotenv==1.2.4
 python-multipart==0.0.33
 pywin32==312; sys_platform == "win32"
 PyYAML==6.0.3
+qdrant-client==1.20.0
 referencing==0.37.0
 regex==2026.9.29
 requests==2.34.2

@@ -1,0 +1,21 @@
+[
+  {"domanda": "Quanta farina serve per 400 grammi di patate negli gnocchi?", "attese": [89], "origine": "aula"},
+  {"domanda": "Che vino si usa per il pollo alla cacciatora?", "attese": [208], "origine": "aula"},
+  {"domanda": "Come si chiama il cacciucco sulle coste dell'Adriatico?", "attese": [455, 456], "origine": "aula"},
+  {"domanda": "Quanti cappelletti bastano a un mangiatore moderato?", "attese": [7], "origine": "aula"},
+  {"domanda": "Perché gli gnocchi possono sciogliersi nell'acqua?", "attese": [89], "origine": "aula"},
+  {"domanda": "Qual è la ricetta del tiramisù?", "attese": [], "origine": "aula"},
+  {"domanda": "Come si ottiene una riduzione dolce dal succo degli acini, che i ragazzi nella stagione fredda usavano per farsi una granita?", "attese": [731], "origine": "propria"},
+  {"domanda": "In quali pasticcini a base di polenta si aggiunge un'infiorescenza essiccata con proprietà che fanno traspirare?", "attese": [591], "origine": "propria"},
+  {"domanda": "Quale ortaggio a cime, dal retrogusto pungente e poco stimato nel resto della penisola, si accompagna alla carne bollita?", "attese": [434], "origine": "propria"},
+  {"domanda": "Come si fa un dessert ghiacciato con i biscottini croccanti dal retrogusto amaro?", "attese": [760], "origine": "propria"},
+  {"domanda": "Come si prepara il guacamole con l'avocado maturo?", "attese": [], "origine": "propria"},
+  {"domanda": "In che anno l'Artusi si trovava a Livorno durante il colèra, la sera in cui mangiò il minestrone?", "attese": [47], "origine": "propria"},
+  {"domanda": "Quali erbe compongono la salsa verde da servire col pesce lesso?", "attese": [119, 120], "origine": "propria"},
+  {"domanda": "In che mese l'agnello comincia a esser buono per l'arrosto all'aretina?", "attese": [529], "origine": "propria"},
+  {"domanda": "Perché il ponce alla romana si serve avanti all'arrosto?", "attese": [770], "origine": "propria"},
+  {"domanda": "Che dessert si fa con gherigli macinati, cacao e albumi sbattuti?", "attese": [637], "origine": "propria"},
+  {"domanda": "Quale dessert freddo si compone a strati di formaggio fresco addolcito, biscotti leggeri imbevuti di liquore e marmellata?", "attese": [676], "origine": "propria"},
+  {"domanda": "Come si glassano in padella quei semi oleosi che, scaldandosi, crepitano?", "attese": [785], "origine": "propria"},
+  {"domanda": "Come si stufano i baccelli verdi con un tocco di aroma da pasticceria al posto della mentuccia?", "attese": [382], "origine": "propria"}
+]

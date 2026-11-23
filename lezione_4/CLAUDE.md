@@ -17,6 +17,14 @@ La cartella del progetto è `lezione_4/`. Specifica in `specs.md`, piano in
   specifica in `specs.md` §14, piano in `docs/superpowers/plans/` (2026-11-03).
 - `convertitore.py`: server MCP del convertitore di unità (strumento `convert_units`);
   specifica in `specs.md` §13, piano in `docs/superpowers/plans/` (2026-11-02).
+- `rag/`: RAG sul ricettario dell'Artusi (`specs.md` §20), moduli: `config` (configurazione da ambiente), `errori` (errore base e UTF-8
+  del terminale), `corpus` (lettura e controllo del ricettario), `chunking` (divisione in chunk),
+  `embedding` (vettori da LM Studio), `indice` (collezione Qdrant), `ingestion` (indicizzazione),
+  `ricerca` (ricerca per similarità), `riscrittura` (riscrittura della domanda, §21),
+  `metadati` (campo `contiene_dosi` sui punti esistenti, §22),
+  `valutazione` (tabella con fonte attesa) e
+  `domande_valutazione.json` (le domande); si eseguono con `python -m rag.ingestion`, `rag.ricerca`,
+  `rag.valutazione`.
 - `tests/`: test automatici con modello finto (`finti.py`); `test_reale.py` per LM Studio.
 - `Dockerfile`, `.dockerignore`, `compose.yaml`: immagine solo runtime, LM Studio sull'host.
 - Dipendenze: `requirements.txt` (runtime, versioni fissate), `requirements-dev.txt` (+ pytest).
@@ -46,16 +54,34 @@ Un'applicazione da terminale in Python che conversa con un modello locale e:
   ricavati dagli strumenti (`specs.md` §18);
 - riassume la cronologia lunga: oltre una soglia i turni vecchi diventano un riassunto nel prompt di
   sistema, restano gli ultimi turni interi (`specs.md` §19);
+- indicizza il ricettario dell'Artusi in Qdrant e lo interroga per significato, con valutazione della
+  ricerca (RAG, `specs.md` §20);
 - si avvia anche con Docker Compose.
 
 ## Confini
 - Implementare solo i requisiti concordati. Le nuove funzionalità si aggiungono una alla volta,
-  ciascuna con specifica e piano approvati; workflow e RAG non vanno anticipati.
+  ciascuna con specifica e piano approvati; i workflow non vanno anticipati.
 - Niente interfacce grafiche, servizi cloud o framework non concordati.
 - Lavorare solo dentro `lezione_4/`. La repository contiene altre lezioni:
   non leggerle per copiarne il codice e non modificarle.
-- Le nuove funzionalità si sviluppano nel branch `feature/nuove-funzionalita`; nessun altro
-  branch o worktree se non richiesto.
+- Le nuove funzionalità si sviluppano nel branch `feature/nuove-funzionalita`; il RAG nel branch
+  `RAG`; nessun altro branch o worktree se non richiesto.
+
+## RAG: regole stabili
+- L'ingestion è uno script separato (`python -m rag.ingestion`), non uno strumento dell'agente.
+- Il modello di embedding viene dalla configurazione (`EMBEDDING_MODEL`), mai fissato nel codice.
+- Qdrant gira con Docker Compose e un volume persistente (`qdrant_dati`); versione dell'immagine fissata.
+- I dati scaricati (`dati/`, compreso il testo del ricettario) e il `.env` restano fuori da Git.
+- Test con embedder finto e Qdrant in memoria, a servizi spenti (né Qdrant né LM Studio).
+- La collezione registra modello, prefissi e titolo nel testo: la ricerca si ferma se la
+  configurazione è diversa; l'ingestion ricalcola i vettori nella stessa collezione (cambio di
+  modello bloccato). Più configurazioni a confronto = una `QDRANT_COLLECTION` ciascuna (§21, §22).
+- `contiene_dosi` si aggiorna sui punti esistenti con `python -m rag.metadati`, senza ricalcolare
+  gli embedding (§22).
+- Le domande di valutazione si fissano prima di misurare e non si cambiano dopo aver visto i risultati.
+- Comandi (PowerShell, da `lezione_4/`): `docker compose up -d qdrant`, poi
+  `.\venv\Scripts\python.exe -m rag.ingestion`, `-m rag.ricerca "domanda"`, `-m rag.valutazione`,
+  `-m rag.metadati`.
 
 ## Scelte tecniche
 - Python, codice sincrono e moduli piccoli, con una separazione semplice tra

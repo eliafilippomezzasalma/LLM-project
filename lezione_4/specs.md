@@ -1729,3 +1729,481 @@ tutto fuori ambito delle misure del router (§17.9) restino `fuori_ambito`.
 - Come il nodo toglie i messaggi dallo stato (per esempio `RemoveMessage` per id, o sostituzione
   dell'intera lista) e come `Sessione` ricava la cronologia nuova, purché valga §19.2.
 - Formato esatto delle righe di log, purché contengano quanto in §19.7.
+
+## 20. RAG, parte 1: ingestion e ricerca sul ricettario dell'Artusi — aggiunto il 2026-11-23
+
+Stato: approvata dall'utente il 2026-11-23, implementata il 2026-11-23 (misure in
+`docs/retrieval.md`); piano:
+`docs/superpowers/plans/2026-11-23-rag-ingestion-ricerca.md`. Branch `RAG`, creato da
+`i-tre-nodi` (`38d2c05`) su decisione dell'utente. Riferimento: lezione 7, Esercizio 1 (slide
+`LLM_Lez_7.pdf`). La lezione 8 (ricerca come tool MCP dell'agente, citazioni, astensione,
+riscrittura, reranking, soglie) e l'Esercizio 2 della lezione 7 (modifiche A «contiene_dosi» e
+B «titolo nel testo indicizzato») sono passi successivi, fuori da questa sezione.
+
+### 20.1 Intento
+
+Prima parte del RAG dell'assistente: costruire un **indice vettoriale ripetibile** del ricettario
+di Pellegrino Artusi (*La scienza in cucina e l'arte di mangiar bene*, Project Gutenberg n. 59047)
+e una **ricerca semantica verificabile** che, data una domanda su una qualunque ricetta,
+restituisca i passaggi pertinenti con la loro fonte (ricetta, capitolo, posizione del chunk).
+
+Perché adesso (dalle slide): ricerca e generazione si separano; se il passaggio giusto non viene
+recuperato, nessun prompt al modello generativo può compensarlo. Qui si misura solo il recupero:
+il modello generativo non entra in gioco, l'agente e il grafo (§17–§19) non cambiano.
+
+Criteri dell'utente:
+1. nella repository: la cartella del progetto (`lezione_4/`) e il `CLAUDE.md` con le regole stabili;
+2. brainstorming e specifica con Superpowers a partire dai requisiti; specifica letta e approvata;
+3. piano e implementazione con test, un passo alla volta, con commit (li propongo io a fine passo,
+   decide l'utente);
+4. avviare Qdrant e LM Studio ed eseguire l'ingestion completa **due volte**;
+5. valutare la ricerca sulle domande con fonte attesa: è la situazione di partenza;
+6. alla fine, domande di prova **scritte senza copiare le parole del testo**.
+
+### 20.2 Corpus (deciso con l'utente)
+
+- Fonte: il file fornito dall'utente
+  `…/ADDIS/argomenti verifica agente+tool+nodi+RAG/Ricettario.txt` (UTF-8, CRLF, ~1 MB, edizione
+  Gutenberg 59047), copiato in `lezione_4/dati/artusi.txt`. **`dati/` resta fuori da Git**
+  (`.gitignore`). Il percorso del file viene dalla configurazione (predefinito
+  `dati/artusi.txt`).
+- **Si indicizzano solo le 790 ricette numerate** (dall'utente: «le domande possono riguardare
+  qualunque ricetta»). Restano fuori: intestazione e licenza Gutenberg, «La storia di un libro»,
+  prefazione, «Spiegazione di voci», lettere, introduzioni dei capitoli (per esempio il testo
+  sotto «MINESTRE» o «Qualità e stagione dei pesci»), l'appendice «La cucina per gli stomachi
+  deboli» (dopo la ricetta 790, dalla riga `APPENDICE`) e l'indice.
+- **Ogni ricetta è un documento** con `numero` (1–790), `titolo` (il testo dopo «N. » sulla riga
+  del titolo, per esempio «Cappelletti all'uso di Romagna») e `capitolo`.
+- **Riconoscere i titoli (osservato nel file):** una riga «N. Titolo» è l'inizio di una ricetta
+  solo se N è **il numero successivo** alla ricetta precedente e la riga sta prima
+  dell'appendice. Nel file ci sono falsi positivi da scartare: righe del corpo che iniziano con
+  un numero («137. Mettete il composto…», «1533. Aggiungeva…») e righe dell'indice nell'appendice
+  («227. Scaloppine alla livornese p. 228. …»). Alcuni titoli hanno un numero romano in fondo
+  («Minestra di semolino composta I», «Fritto alla romana I»): fa parte del titolo.
+- **Capitoli:** elenco chiuso, ricavato dalle intestazioni in maiuscolo prima della prima ricetta
+  di ciascun capitolo e scritto in forma leggibile (prima lettera maiuscola, come nelle slide:
+  «Minestre asciutte e di magro»). Intestazioni osservate: Brodi, gelatina e sughi; Minestre in
+  brodo; Minestre asciutte e di magro; Principii; Salse; Uova; Paste e pastelle; Ripieni; Fritti;
+  Lesso; Tramessi; Umidi; Rifreddi; Erbaggi e legumi; Piatti di pesce; Arrosti; Pasticceria;
+  Torte e dolci al cucchiaio; Siroppi; Conserve; Liquori; Gelati; Cose diverse. Non sono capitoli
+  le righe in maiuscolo dentro le ricette («PASTA FROLLA», «RICETTA A», «PRIMA RICETTA», «RICETTA
+  DI DETTA ZUPPA PER SEI PERSONE») né la sovra-intestazione «MINESTRE». Con «Uova» (intestazione
+  `UOVA` prima della ricetta 139, trovata nella revisione) sono i **23 capitoli** della slide; il
+  costruttore conferma l'elenco sul file e lo fissa nel codice e nei test; ogni ricetta deve
+  avere un capitolo dell'elenco.
+- **Pulizia:** righe spezzate a ~70 caratteri riunite in paragrafi (i paragrafi sono separati da
+  righe vuote); spazi normalizzati; CRLF → LF; i marcatori di corsivo Gutenberg (`_parola_`)
+  tolti dal testo; gli elenchi degli ingredienti (righe rientrate) restano su righe proprie, una
+  per ingrediente. Il titolo **non** entra nel testo del chunk (resta nel payload): è la
+  configurazione di partenza dell'aula; il titolo nel testo indicizzato è la futura modifica B.
+- **Verifica del corpus:** 790 ricette, numerazione 1–790 senza buchi né doppioni, ogni ricetta
+  con titolo, capitolo e testo non vuoti.
+
+### 20.3 Chunking (deciso con l'utente: configurazione dell'aula)
+
+- Prima si divide **per ricetta**; una ricetta che sta nella dimensione massima è **un solo chunk**.
+- Le ricette più lunghe si dividono **ai paragrafi**: si accumulano paragrafi interi finché non si
+  supera la dimensione; un paragrafo da solo più lungo della dimensione si divide a finestra
+  (preferibilmente a fine frase). Tra due chunk consecutivi della stessa ricetta si ripetono
+  **circa 200 caratteri** (l'overlap, preso dalla fine del chunk precedente, possibilmente da un
+  confine di frase o di parola).
+- Valori predefiniti: **dimensione 1200 caratteri, overlap 200**, strategia `paragrafi`; tutti e
+  tre configurabili. Strategia alternativa `finestra` (ogni N caratteri con overlap, senza
+  guardare i paragrafi), richiesta dalla slide «strategia configurabile» e utile ai confronti
+  futuri; non è usata nella valutazione di partenza.
+- Un chunk non contiene mai testo di due ricette diverse.
+- Validazione: dimensione > 0, 0 ≤ overlap < dimensione, strategia nell'elenco; altrimenti errore
+  chiaro all'avvio.
+- Misure osservate sul file: ricetta mediana ~900 caratteri, 90° percentile ~1.900, circa 230
+  ricette oltre i 1.200 caratteri.
+
+### 20.4 Embedding (scelta mia, confermata dalla presenza del modello)
+
+- Modello di embedding servito da **LM Studio** sull'host, endpoint `/v1/embeddings` dello stesso
+  server di `LM_BASE_URL`. Modello predefinito in `.env.example`:
+  `text-embedding-nomic-embed-text-v1.5` (già installato e caricato; è quello delle slide della
+  lezione 8). **Il nome del modello sta nella configurazione (`EMBEDDING_MODEL`), mai nel codice.**
+- **Stesso modello e stessa configurazione** per chunk e domande.
+- Embedding dei chunk **a lotti** (dimensione del lotto configurabile o fissa, scelta del
+  costruttore).
+- Testo inviato all'embedder: il testo del chunk così com'è e la domanda così com'è, senza
+  prefissi (configurazione di partenza dell'aula). *Scelta mia:* i prefissi consigliati da Nomic
+  (`search_document:` / `search_query:`) restano una possibile modifica futura da misurare, non
+  entrano ora.
+- La dimensione dei vettori si ricava dal modello (prima risposta dell'embedder), non si scrive a
+  mano.
+
+### 20.5 Qdrant
+
+- **Servizio `qdrant` in `compose.yaml`** di `lezione_4`, immagine con versione fissata, porta
+  6333, **volume persistente** (la collezione sopravvive al riavvio del container). L'ingestion e
+  la ricerca girano sull'host e raggiungono Qdrant con `QDRANT_URL` (predefinito
+  `http://localhost:6333`). Il servizio `assistente` resta com'è.
+- Collezione `QDRANT_COLLECTION` (predefinito `ricette`), distanza **coseno**, dimensione dei
+  vettori = quella del modello.
+- **Modello registrato nella collezione:** nome del modello di embedding (e dimensione) salvati
+  nei metadati della collezione alla creazione. **Cambio bloccato:** se la collezione esiste ed è
+  stata creata con un altro modello o un'altra dimensione, ingestion e ricerca si fermano con un
+  errore chiaro che indica i due modelli e come ripartire (cancellare la collezione o usarne
+  un'altra). Se la versione di Qdrant non supporta i metadati di collezione, il costruttore
+  sceglie un'alternativa equivalente e la documenta.
+- **Un punto per chunk**, con payload:
+  `ricetta` (numero), `titolo`, `capitolo`, `posizione` (indice del chunk nella ricetta, da 0),
+  `testo` (il testo del chunk), `fonte` (riferimento leggibile al libro, per esempio «Artusi, La
+  scienza in cucina e l'arte di mangiar bene»), `documento_id` (per esempio `ricetta-089`). Nomi
+  in italiano come nell'esempio della slide; nomi esatti lasciati al costruttore purché ci siano
+  queste informazioni.
+- **Indici sul payload** per i campi filtrati: `capitolo` (keyword) e `ricetta` (intero).
+- **Ripetibilità (strategia A delle slide: ID stabili e upsert):** l'ID del punto è un UUID
+  deterministico (per esempio UUID v5) ricavato da documento e posizione del chunk; rieseguire
+  l'ingestion sostituisce i punti (upsert) invece di aggiungerne. **Punti obsoleti:** se cambia il
+  chunking e una ricetta produce meno chunk, i punti in più vanno rimossi a fine ingestion (per
+  esempio cancellando i punti della collezione il cui ID non è tra quelli appena scritti).
+- **Controllo:** il numero di punti è lo stesso dopo la prima e dopo la seconda ingestion completa.
+
+### 20.6 Ingestion: script separato
+
+- Comando `python -m rag.ingestion` (da `lezione_4/`). **Non è uno strumento dell'agente** e non
+  gira a ogni domanda: si esegue quando il corpus o il chunking cambiano.
+- Passi ispezionabili (dalle slide): caricare → pulire → dividere in ricette → chunking →
+  metadati → embedding a lotti → upsert → rimozione dei punti obsoleti.
+- Uscita su terminale / log INFO: ricette trovate, chunk prodotti (con min/medio/max dei
+  caratteri), modello e dimensione dei vettori, punti nella collezione **prima** e **dopo**,
+  punti rimossi, tempo totale.
+- Il corpus viene verificato (§20.2) **prima** di calcolare embedding: se la numerazione non è
+  completa, l'ingestion si ferma senza scrivere niente.
+- Errori previsti con messaggio chiaro e senza traceback: file assente, Qdrant non raggiungibile
+  (suggerire `docker compose up -d qdrant` e `QDRANT_URL`), LM Studio o modello di embedding non
+  disponibili, modello diverso da quello della collezione.
+
+### 20.7 Ricerca
+
+- Funzione di ricerca nel pacchetto `rag` (usata da valutazione e, nella lezione 8, dal server
+  MCP) e comando `python -m rag.ricerca "domanda" [--k N] [--capitolo NOME]`.
+- La domanda viene trasformata in embedding così com'è, con lo stesso modello; si chiedono a
+  Qdrant i k punti più vicini.
+- **k:** predefinito 5; **massimo imposto dal codice** (predefinito 10, configurabile); k fuori
+  dall'intervallo 1–massimo viene riportato nell'intervallo e la riduzione è segnalata.
+  Domanda vuota → errore chiaro.
+- **Filtro per capitolo applicato durante la ricerca** (condizione inviata a Qdrant, non filtro
+  dopo): tutti i risultati appartengono al capitolo richiesto. Capitolo non presente nell'elenco
+  chiuso → errore chiaro con l'elenco dei valori validi.
+- Ogni risultato riporta: posizione in classifica, score, ricetta (numero e titolo), capitolo,
+  posizione del chunk, testo. Uscita del comando leggibile su terminale.
+- Con k uguale e indice invariato la ricerca è deterministica: due esecuzioni danno gli stessi
+  risultati.
+
+### 20.8 Valutazione con fonte attesa
+
+- File delle domande in Git (per esempio `rag/domande_valutazione.json`): per ogni domanda il
+  testo e le **ricette attese** (uno o più numeri; lista vuota = il libro non contiene la
+  risposta).
+- Domande di partenza (quelle viste in aula, con fonte controllata leggendo il testo):
+  - «Quanta farina serve per 400 grammi di patate negli gnocchi?» → ricetta 89;
+  - «Che vino si usa per il pollo alla cacciatora?» → ricetta 208;
+  - «Come si chiama il cacciucco sulle coste dell'Adriatico?» → ricette 455–456;
+  - «Quanti cappelletti bastano a un mangiatore moderato?» → ricetta 7;
+  - «Perché gli gnocchi possono sciogliersi nell'acqua?» → ricetta 89;
+  - «Qual è la ricetta del tiramisù?» → nessuna (non compare nel libro).
+  Numeri delle ricette da confermare sul file prima di registrarli.
+- **Domande di prova proprie (criterio 6 dell'utente):** almeno tre, **scritte da me e controllate
+  dall'utente prima di lanciare la ricerca** (deciso dall'utente: il piano ha una pausa per la sua
+  approvazione), alla fine, **senza copiare le parole del testo** (sinonimi, parafrasi, linguaggio di oggi), con la fonte attesa
+  decisa **prima** di eseguire la ricerca e controllata leggendo la ricetta; almeno una senza
+  risposta nel libro. Si aggiungono al file e alla tabella.
+- Comando `python -m rag.valutazione [--k 5]`: esegue tutte le domande e stampa una **tabella
+  riproducibile**: domanda, fonte attesa, posizione della prima fonte attesa nei primi k
+  («assente» se non c'è), score di quel risultato, miglior score, ricetta in prima posizione.
+  In fondo: fonte trovata in *x* casi su *y* domande con risposta; score migliori delle domande
+  senza risposta (per confronto, nessuna soglia).
+- Criterio della slide: la fonte attesa compare tra i primi k **e il chunk contiene davvero
+  l'informazione**. Il secondo punto lo verifica il controllore leggendo il testo restituito
+  (annotato nel resoconto); il comando misura solo il primo.
+- La tabella della valutazione di partenza (k = 5) e i conteggi delle due ingestion vanno in
+  `docs/retrieval.md`, con il comando per riprodurli e due query commentate.
+
+### 20.9 Configurazione (variabili d'ambiente, in `.env.example`)
+
+`LM_BASE_URL` (già esistente, condiviso), `EMBEDDING_MODEL`, `QDRANT_URL`, `QDRANT_COLLECTION`,
+`RAG_CORPUS` (percorso del file), `CHUNK_STRATEGIA` (`paragrafi` | `finestra`), `CHUNK_DIMENSIONE`,
+`CHUNK_OVERLAP`, `RICERCA_K_MAX`. Valori predefiniti come sopra; valori non validi → errore chiaro
+all'avvio. La configurazione del RAG è separata da quella dell'assistente: l'assistente non deve
+richiederla per avviarsi.
+
+### 20.10 Evidenze richieste (dall'utente)
+
+1. **Specifica e piano nella repository** (questa sezione; piano in
+   `docs/superpowers/plans/2026-11-23-rag-ingestion-ricerca.md`).
+2. **Test superati con i servizi spenti** (Qdrant e LM Studio spenti): embedder finto e Qdrant in
+   memoria (`QdrantClient(":memory:")` o equivalente del client).
+3. **Stesso numero di punti dopo le due ingestion** complete reali.
+4. **Tabella della valutazione di partenza.**
+5. **Domande di prova** proprie, senza le parole del testo, valutate.
+
+### 20.11 Test e verifiche
+
+- **Automatici (nessun servizio):**
+  - corpus: 790 ricette, numerazione 1–790 senza buchi, falsi positivi scartati (righe di esempio
+    del file), titolo e capitolo di alcune ricette note (per esempio 7, 89, 208, 790), licenza e
+    appendice escluse, corsivi tolti; un estratto piccolo del file nei test, più un test sul
+    file vero se presente in `dati/` (saltato se manca);
+  - chunking: **una ricetta breve** → un chunk; **una ricetta lunga** → più chunk, nessuno oltre
+    la dimensione (salvo il caso documentato), overlap presente, posizioni 0..n-1, nessun testo di
+    altre ricette; strategia `finestra`; validazione dei parametri;
+  - ID stabili: stesso chunk → stesso ID; chunk diversi → ID diversi;
+  - ingestion con embedder finto e Qdrant in memoria: punti = chunk; **due ingestion → stesso
+    numero di punti**; punti obsoleti rimossi quando il chunking cambia; payload completo; indici
+    sul payload creati; modello registrato; **cambio di modello bloccato** con errore chiaro;
+    corpus incompleto → nessuna scrittura;
+  - ricerca: ordinamento per score, k predefinito, **k oltre il massimo ridotto**, k < 1, domanda
+    vuota, **filtro per capitolo: tutti i risultati del capitolo richiesto**, capitolo
+    sconosciuto → errore con elenco;
+  - valutazione: posizione della fonte attesa, «assente», domande senza risposta, formato della
+    tabella (con un indice finto preparato);
+  - configurazione: valori predefiniti e non validi;
+  - la suite esistente dell'assistente resta verde.
+- **Reali (controllore, servizi accesi):** `docker compose up -d qdrant`; LM Studio con il modello
+  di embedding; ingestion completa due volte con i conteggi; una ricerca con filtro per capitolo
+  (per esempio «Come si frigge il pollo?» `--capitolo Fritti --k 3`); valutazione di partenza;
+  riavvio del container Qdrant e controllo che la collezione sia ancora lì; domande di prova.
+- Eventuali test reali automatici solo con `RUN_REAL_TESTS=1`, come per l'assistente.
+
+### 20.12 Obiettivi
+
+- Corpus pulito e verificato: 790 ricette con numero, titolo, capitolo.
+- Chunking per ricetta e paragrafi, configurabile.
+- Ingestion ripetibile senza duplicati, con modello registrato e cambio bloccato.
+- Ricerca top-k con massimo imposto e filtro per capitolo durante la ricerca.
+- Valutazione di partenza riproducibile con un comando.
+
+### 20.13 Non-obiettivi
+
+- Generazione di risposte, agente, server MCP di ricerca, citazioni, astensione (lezione 8).
+- Riscrittura della domanda, reranking, soglie sullo score.
+- Modifiche A (`contiene_dosi`) e B (titolo nel testo indicizzato) dell'Esercizio 2.
+- Indicizzare le parti del libro che non sono ricette.
+- Confronti tra strategie di chunking o tra modelli di embedding (estensioni).
+
+### 20.14 Anti-obiettivi (sarebbe un fallimento anche se «funziona»)
+
+- Una seconda ingestion che raddoppia i punti, o risultati duplicati nella ricerca.
+- Ricette mancanti, unite o spezzate tra due documenti; testo di due ricette nello stesso chunk.
+- Un risultato di cui non si sa dire ricetta, capitolo e posizione del chunk.
+- Il nome del modello di embedding scritto nel codice, o domande e documenti con modelli diversi.
+- Filtro per capitolo applicato dopo la ricerca (meno di k risultati) o risultati di altri capitoli.
+- Test che richiedono Qdrant o LM Studio accesi per passare.
+- Il testo del libro o `.env` dentro Git.
+- Una valutazione «a sensazione»: fonti attese decise dopo aver visto i risultati.
+- L'assistente esistente che cambia comportamento o non parte più.
+
+### 20.15 Vincoli di lavoro
+
+- Solo in `lezione_4/`, sul branch `RAG`. La §16 non committata di `specs.md`, `COPIONE.md` e la
+  modifica locale di `docs/superpowers/handoff.md` restano fuori dai commit del RAG; anche il
+  testo del ricettario (`Ricettario.txt` / `dati/artusi.txt`) non entra mai in Git (deciso
+  dall'utente).
+- Commit un passo alla volta: a fine passo verificato **propongo io** il commit con un messaggio
+  suggerito; **decide l'utente** (nessun commit o push senza il suo ordine).
+- Dipendenza nuova `qdrant-client`, con versione fissata in `requirements.txt` (ed eventuali
+  dipendenze indirette fissate come le altre); versione dell'immagine di Qdrant fissata in
+  `compose.yaml`. Attenzione a Smart App Control (dipendenze binarie: vedi le note su `jiter` e
+  `uuid_utils`). *Scelta mia:* il primo passo del piano installa `qdrant-client` e prova
+  l'import e la modalità in memoria; se Smart App Control blocca qualcosa, mi fermo e chiedo
+  all'utente (nessun ripiego deciso da solo: versioni più vecchie, finto scritto a mano o API REST).
+- Aggiornare `CLAUDE.md` con le regole stabili del RAG: ingestion come script separato, modello di
+  embedding dalla configurazione, Qdrant con Docker Compose, dati scaricati fuori da Git, test a
+  servizi spenti, branch `RAG`; togliere «RAG non va anticipato» dai confini. Aggiornare
+  `README.md` (avvio di Qdrant, comandi, variabili) e `.env.example`.
+
+### 20.16 Lasciato al costruttore
+
+- Struttura interna del pacchetto `rag/` (moduli, nomi di funzioni), purché i tre comandi
+  `rag.ingestion`, `rag.ricerca`, `rag.valutazione` esistano.
+- Dimensione dei lotti di embedding; formato esatto delle stampe e dei log.
+- Come registrare il modello nella collezione (metadati della collezione o alternativa
+  equivalente), purché il cambio sia bloccato.
+- Dettagli della pulizia non elencati, purché i testi restino fedeli al libro.
+- Versione esatta di `qdrant-client` e dell'immagine di Qdrant (compatibili tra loro).
+
+
+## 21. RAG, parte 2: miglioramento del retrieval (quattro leve misurate) — aggiunto il 2026-11-23
+
+Stato: decisa con l'utente il 2026-11-23 (domande nuove e leve 1–4 in ordine), che ha chiesto di
+procedere in autonomia senza fermarsi per le approvazioni; implementata e misurata il
+2026-11-23 (leve tenute: titolo nel testo, riscrittura, bge-m3; prefissi tolti); piano:
+`docs/superpowers/plans/2026-11-23-rag-leve-retrieval.md`. Branch `RAG`. Misure in
+`docs/retrieval.md`.
+
+### 21.1 Intento
+
+La valutazione della §20 mostra che la ricerca trova la fonte solo quando la domanda usa le parole
+del libro (3 su 5 domande d'aula) e mai quando le parafrasa (0 su 4 domande proprie, la migliore
+98ª). Lo scopo è capire **quale leva migliora davvero il retrieval**, misurandole una alla volta
+sulle stesse domande, e tenere solo quelle che migliorano.
+
+### 21.2 Domande di valutazione (decise con l'utente)
+
+- Alle 11 domande della §20 se ne aggiungono **8 nuove**, fissate **prima** di ogni misura: 4 con
+  le parole del libro (Minestrone 47, Salsa verde 119/120, Arrosto d'agnello all'aretina 529,
+  Ponce alla romana 770) e 4 parafrasate senza parole significative in comune con titolo e testo
+  della ricetta (Torta di noci 637, Zuppa tartara 676, Mandorle tostate 785, Fagiuolini con
+  l'odore di vainiglia 382). Controllo delle parole fatto con uno script.
+- Totale: 19 domande, 17 con fonte attesa e 2 senza risposta (tiramisù, guacamole). Le domande
+  non si cambiano durante le misure.
+- Misura principale: fonte attesa nei primi 5; si riportano anche i primi 10 e lo score migliore
+  delle due domande senza risposta.
+
+### 21.3 Le leve, in ordine (deciso con l'utente)
+
+Ogni leva si aggiunge alla configurazione migliore trovata fino a quel punto (*scelta mia:* si
+tiene se aumenta le fonti nei primi 5, a parità si guardano i primi 10; altrimenti si toglie
+prima della leva successiva). Ogni configurazione ha la **sua collezione Qdrant**, così le
+precedenti restano per il confronto e nessuna viene sovrascritta (*scelta mia*).
+
+1. **Prefissi di Nomic:** `search_document: ` davanti al testo dei chunk, `search_query: ` davanti
+   alla domanda (sono i prefissi con cui il modello è addestrato). Collezione `ricette_prefissi`.
+2. **Titolo e capitolo nel testo indicizzato** (modifica B dell'Esercizio 2, lezione 7): il testo
+   che diventa vettore è «titolo — capitolo», riga vuota, testo del chunk. Il payload `testo`
+   resta il chunk originale (*scelta mia*). Collezione `ricette_titolo`.
+3. **Riscrittura della domanda** (lezione 8): prima della ricerca il modello di chat di LM Studio
+   riscrive la domanda con il lessico del ricettario (nome probabile del piatto, ingredienti con i
+   termini del libro). Si cerca con **domanda originale + riscrittura** (*scelta mia:* la domanda
+   originale non va persa se la riscrittura sbaglia). Ragionamento del modello disattivato,
+   temperatura 0. Non richiede una nuova ingestion.
+4. **Modello di embedding multilingue:** `text-embedding-bge-m3` (scelto con l'utente, già
+   caricato in LM Studio), senza prefissi (bge-m3 non li usa), con le leve 2 e 3 se tenute.
+   Collezione `ricette_bge`.
+
+### 21.4 Configurazione (nuove variabili, tutte facoltative, predefiniti = comportamento §20)
+
+`EMBEDDING_PREFISSO_DOCUMENTO`, `EMBEDDING_PREFISSO_DOMANDA` (vuote: nessun prefisso; il codice
+aggiunge lo spazio dopo il prefisso), `INDICE_CON_TITOLO` (`si`/`no`, predefinito `no`),
+`RICERCA_RISCRITTURA` (`si`/`no`, predefinito `no`), `RISCRITTURA_MODEL` (obbligatoria solo se la
+riscrittura è attiva; identificativo restituito da `GET /v1/models`, mai nel codice). Valori non
+validi → errore chiaro all'avvio.
+
+### 21.5 Coerenza tra indice e ricerca
+
+- Alla creazione la collezione registra nei metadati, oltre a modello e dimensione,
+  `prefisso_documento`, `prefisso_domanda` e `titolo_nel_testo`. Una collezione della §20 senza
+  queste chiavi vale come «nessun prefisso, senza titolo».
+- Ingestion e ricerca si fermano con un errore chiaro se la configurazione corrente è diversa da
+  quella registrata (stesso trattamento del cambio di modello): indicano i valori registrati e
+  quelli correnti e suggeriscono un'altra `QDRANT_COLLECTION` o una nuova ingestion.
+
+### 21.6 Riscrittura: errori e uscita
+
+- LM Studio spento o modello di chat non disponibile → errore chiaro, senza traceback.
+- Si tolgono eventuali blocchi `<think>…</think>`; si tiene la prima riga non vuota. Riscrittura
+  vuota → si cerca con la sola domanda originale.
+- La ricerca stampa la domanda effettivamente cercata; la valutazione elenca le riscritture sotto
+  la tabella.
+
+### 21.7 Evidenze
+
+- Tabella di confronto in `docs/retrieval.md`: una riga per configurazione (partenza, +prefissi,
+  +titolo, +riscrittura, bge-m3) con fonti nei primi 5 e nei primi 10 (totale, domande con parole
+  del libro, domande parafrasate) e score delle domande senza risposta; tabella completa della
+  configurazione migliore; commento su che cosa ha aiutato e che cosa no.
+- Per ogni nuova collezione: numero di punti uguale a 1106 dopo l'ingestion.
+- Test automatici a servizi spenti: embedder e riscrittore finti, Qdrant in memoria.
+
+### 21.8 Non-obiettivi e anti-obiettivi
+
+- Niente generazione della risposta, niente strumento MCP, niente reranking (lezione 8, dopo).
+- Non si cambiano le domande dopo aver visto i risultati, né si scrivono regole su misura per
+  singole domande: sarebbe un miglioramento finto.
+- La collezione `ricette` della §20 non si tocca; i predefiniti restano quelli della §20.
+
+### 21.9 Lasciato al costruttore
+
+Testo esatto del prompt di riscrittura, nomi delle funzioni, formato della riga «titolo —
+capitolo», forma della tabella di confronto.
+
+
+## 22. RAG, parte 3: modifica A (campo `contiene_dosi`) e chiusura della modifica B — aggiunto il 2026-11-23
+
+Stato: approvata dall'utente il 2026-11-23 (procedere in autonomia), implementata e misurata il
+2026-11-23; la §22.3 sostituisce la regola della §21.5 per l'ingestion; piano:
+`docs/superpowers/plans/2026-11-23-rag-esercizio-2.md`. Branch `RAG`. Riferimento: lezione 7, Esercizio 2 (slide «due
+modifiche alla pipeline»), modifiche A e B.
+
+### 22.1 Intento
+
+Chiudere l'Esercizio 2. La modifica B (titolo nel testo indicizzato) è già misurata nella §21, ma
+in una collezione nuova: la slide chiede invece che l'ingestion ricalcoli i chunk **senza ricreare
+la collezione** e senza aumentare i punti. La modifica A aggiunge un metadato utile alle domande
+sulle quantità («quanta farina…», «quanti grammi…»): cercare solo tra i chunk che contengono un
+elenco di ingredienti con le dosi.
+
+### 22.2 Modifica A: il campo `contiene_dosi` (requisiti della slide)
+
+- **Definizione** (*scelta mia, da confermare*): un chunk contiene le dosi se ha **almeno due righe
+  in forma di elenco di ingredienti**: riga che comincia con l'ingrediente, poi una virgola e una
+  quantità (`grammi`, `N.`, `decilitri`, `litri`, `chilogrammi`, numeri scritti in lettere come
+  «mezzo», «due»…). Esempio: «Patate grosse e gialle, grammi 400.» e «Farina, grammi 150.». Le
+  dosi citate nel discorso («versate grammi 500 di carne…») non contano: la slide parla di
+  «elenco di ingredienti». Sul corpus attuale: **397 chunk su 1106, di 346 ricette** (*corretto
+  in implementazione:* la riga deve essere corta, al più 90 caratteri, per escludere la prosa con
+  una virgola, e il nome dell'ingrediente può contenere virgole, come «Magro di manzo nella
+  coscia, senz'osso, grammi 500»; la stima della bozza era 385/338).
+- **Payload:** campo booleano `contiene_dosi` in ogni punto, scritto dall'ingestion.
+- **Indice sul payload:** `contiene_dosi` di tipo booleano, creato con la collezione e, per le
+  collezioni esistenti, dal comando di aggiornamento.
+- **Punti esistenti senza ricalcolare gli embedding:** nuovo comando
+  `python -m rag.metadati` che legge i punti della collezione (`QDRANT_COLLECTION`), calcola il
+  campo dal testo nel payload e lo scrive con l'aggiornamento del solo payload (nessuna chiamata
+  a LM Studio, vettori invariati). Rieseguibile: dà lo stesso risultato. Stampa quanti punti hanno
+  il campo vero e falso.
+- **Filtro nella ricerca:** opzione `--solo-dosi` di `rag.ricerca` (e parametro `solo_dosi` di
+  `cerca`). Condizione inviata a Qdrant durante la ricerca, combinata in `must` con il filtro per
+  capitolo. Con il filtro tutti i risultati hanno `contiene_dosi` vero, al massimo k.
+- **Collezione senza il campo** (ricerca con `--solo-dosi` prima di `rag.metadati`): errore chiaro
+  che indica di eseguire `python -m rag.metadati`, invece di una lista vuota muta.
+
+### 22.3 Modifica B: ricalcolo senza ricreare la collezione
+
+- Cambia la regola della §21.5 per l'**ingestion**: se prefissi o `INDICE_CON_TITOLO` sono
+  diversi da quelli registrati, l'ingestion **non si ferma**: ricalcola tutti i vettori nella
+  stessa collezione (stessi ID, upsert, punti invariati) e alla fine aggiorna le impostazioni
+  registrate. Il cambio di **modello o dimensione resta bloccato** (i vettori non sarebbero
+  confrontabili).
+- Durante il ricalcolo la collezione è segnata «ingestion incompleta» nei metadati; il segno si
+  toglie a fine ingestion. La **ricerca** si ferma con un errore chiaro se il segno c'è (vettori
+  misti) o se le impostazioni registrate sono diverse dalla configurazione (come nella §21.5).
+- Evidenza: nuova collezione `ricette_b` indicizzata con la configurazione di partenza, poi
+  ingestion con `INDICE_CON_TITOLO=si` sulla stessa collezione: punti prima e dopo uguali (1106),
+  impostazioni registrate aggiornate, valutazione uguale a quella di `ricette_titolo`.
+- Un test verifica il testo passato all'embedder (già presente dalla §21).
+
+### 22.4 Valutazione (consegna: partenza, dopo A, dopo B)
+
+- **Dopo A:** `rag.valutazione` riceve l'opzione `--solo-dosi`, che applica il filtro a tutte le
+  domande. Si misura su `ricette` (configurazione di partenza) con e senza filtro, sulle 19
+  domande. *Atteso:* le domande sulle quantità restano trovate o salgono, mentre le domande senza
+  dosi (cacciucco, ponce…) possono sparire: il filtro serve solo quando la domanda chiede le
+  dosi, e la tabella lo mostra.
+- **Dopo B:** la misura della §21 (configurazione 2), ripetuta su `ricette_b`.
+- In `docs/retrieval.md`: una sezione «Esercizio 2» con partenza, dopo A e dopo B, e i conteggi
+  dell'aggiornamento dei metadati.
+
+### 22.5 Test (a servizi spenti)
+
+- Riconoscimento delle dosi: elenco vero (gnocchi), dosi solo nel discorso (falso), una sola riga
+  (falso), testo senza dosi (falso).
+- Ingestion: ogni punto ha `contiene_dosi`; indice creato.
+- `rag.metadati`: aggiunge il campo a punti che non l'hanno, **vettori identici prima e dopo**,
+  nessuna chiamata all'embedder, rieseguibile, numero di punti invariato.
+- Ricerca: con `solo_dosi` tutti i risultati hanno il campo vero e sono al più k; combinata con il
+  capitolo; collezione senza il campo → errore.
+- Modifica B: ingestion con titolo su una collezione indicizzata senza titolo → stessi punti,
+  impostazioni aggiornate; modello diverso ancora bloccato; ricerca bloccata con «ingestion
+  incompleta».
+
+### 22.6 Non-obiettivi e vincoli
+
+- Nessun cambio alle domande di valutazione. Nessun riconoscimento delle dosi con il modello di
+  chat (regola sul testo, ripetibile e testabile).
+- Le collezioni esistenti restano; `rag.metadati` si esegue su tutte e quattro più `ricette_b`.
+- Commit: la slide chiede «modifiche A e B ciascuna con test e commit». Si decide con l'utente
+  come dividere i commit (vedi resoconto).
